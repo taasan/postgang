@@ -195,7 +195,7 @@ main = do
   getDays = fmap parse
   ical :: (Integer, Int, Int) -> Entry -> [Either String T.Text]
   ical today (Entry days _) =
-    (Right <$> preamble) <> (getDays days >>= event today)
+    (Right <$> preamble) <> (getDays days >>= event today) <> [Right "END:VCALENDAR"]
   event
     :: (Integer, Int, Int)
     -> Either String DeliveryDay
