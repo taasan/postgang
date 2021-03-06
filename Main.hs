@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Main
   ( main
@@ -8,39 +7,25 @@ where
 import Data.Aeson
   ( FromJSON (parseJSON)
   , Value (Object)
-  , decode
   , (.:)
-  )
-import Data.Monoid
-  ( (<>)
   )
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+import Prelude hiding
+  ( show
+  )
 
 import Control.Applicative
   ( empty
-  , (<$)
-  , (<$>)
-  , (<*>)
   , (<|>)
   )
-import Control.Monad
-  ( join
-  )
-import Control.Monad.IO.Class
-  ( MonadIO (liftIO)
-  )
 import qualified Data.Attoparsec.Text as P
-import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Either
   ( isLeft
   , rights
   )
-import Data.Foldable
-  ( traverse_
-  )
-import Data.Maybe
-  ( isJust
+import Data.String
+  ( IsString (..)
   )
 import Data.Time.Calendar
   ( toGregorian
@@ -49,25 +34,17 @@ import Data.Time.Clock
   ( UTCTime (utctDay)
   , getCurrentTime
   )
-import GHC.TopHandler
-  ( runIO
+import Network.HTTP.Conduit
+  ( Request (method, requestHeaders)
+  , parseUrlThrow
   )
-import Network.HTTP.Req
-  ( GET (GET)
-  , NoReqBody (NoReqBody)
-  , QueryParam (queryParam)
-  , defaultHttpConfig
-  , header
-  , https
-  , jsonResponse
-  , req
-  , responseBody
-  , runReq
-  , (/:)
+import Network.HTTP.Simple
+  ( getResponseBody
+  , httpJSON
+  , setRequestQueryString
   )
 import System.Environment
   ( getArgs
-  , lookupEnv
   )
 import System.IO
   ( IOMode (WriteMode)
@@ -76,7 +53,7 @@ import System.IO
 import Text.Printf
   ( printf
   )
-
+import qualified Text.Show as Show
 data Entry =
   Entry
     { nextDeliveryDays :: [T.Text]
@@ -120,6 +97,10 @@ data DeliveryDay =
     }
   deriving (Show)
 
+-- Generic show
+show :: (Show a, IsString b) => a -> b
+show x = fromString $ Show.show x
+
 parseDeliveryDay :: P.Parser DeliveryDay
 parseDeliveryDay =
   DeliveryDay
@@ -150,30 +131,22 @@ parseMonth =
     <|> (November <$ P.string "november")
     <|> (December <$ P.string "desember")
 
-getData :: IO Entry
-getData = runReq defaultHttpConfig $ do
-  bs <- req
-    GET
-    (  https "www.posten.no"
-    /: "levering-av-post-2020"
-    /: "_"
-    /: "component"
-    /: "main"
-    /: "1"
-    /: "leftRegion"
-    /: "1"
-    )
-    NoReqBody
-    jsonResponse
-    options
-  liftIO $ pure (responseBody bs)
- where
-  options = header "x-requested-with" "XMLHttpRequest"
-    <> queryParam "postCode" (Just @Int 7530)
-
 main :: IO ()
 main = do
-  entry <- getData
+  initialRequest <-
+    parseUrlThrow
+      "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1"
+  let postCode :: Int
+      postCode = 7530
+      request =
+        setRequestQueryString [("postCode", Just (show postCode))]
+          $ initialRequest
+              { requestHeaders = [("x-requested-with", "XMLHttpRequest")]
+              , method         = "GET"
+              }
+
+  response <- httpJSON request
+  let entry = getResponseBody response
   today <- toGregorian . utctDay <$> getCurrentTime
   argv  <- getArgs
   let output = ical today entry
@@ -187,15 +160,15 @@ main = do
       withFile fileName WriteMode $ \h -> do
         (T.hPutStr h . T.intercalate "\r\n" . rights) output
  where
-  monthNo :: Month -> Int
-  monthNo m = fromEnum m + 1
   parse :: T.Text -> Either String DeliveryDay
-  parse day = P.parseOnly parseDeliveryDay day
+  parse = P.parseOnly parseDeliveryDay
   getDays :: [T.Text] -> [Either String DeliveryDay]
   getDays = fmap parse
   ical :: (Integer, Int, Int) -> Entry -> [Either String T.Text]
   ical today (Entry days _) =
-    (Right <$> preamble) <> (getDays days >>= event today) <> [Right "END:VCALENDAR"]
+    (Right <$> preamble)
+      <> (getDays days >>= event today)
+      <> (Right <$> ["END:VCALENDAR", ""])
   event
     :: (Integer, Int, Int)
     -> Either String DeliveryDay
@@ -206,8 +179,9 @@ main = do
     in
       Right
         <$> [ "BEGIN:VEVENT"
-            , T.pack $ printf "UID:%s" $ tshow dd
-            , T.pack $ printf "SUMMARY:Posten kommer %s" $ show dayName
+            , T.pack $ printf "UID:%s" (show dd :: T.Text)
+            , T.pack
+              $ printf "SUMMARY:Posten kommer %s" (show dayName :: T.Text)
             , T.pack $ printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
             , "DURATION:P1D"
             , T.pack
@@ -215,9 +189,6 @@ main = do
             , "END:VEVENT"
             ]
   event _ (Left x) = [Left x]
-  httpPreamble :: [T.Text]
-  httpPreamble = ["Content-Type:text/calendar;charset=utf8", ""]
-
   preamble :: [T.Text]
   preamble =
     [ "BEGIN:VCALENDAR"
@@ -226,5 +197,3 @@ main = do
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
-  tshow :: Show a => a -> T.Text
-  tshow = T.pack . show
