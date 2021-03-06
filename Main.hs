@@ -185,7 +185,7 @@ main = do
             (x   : _) -> x
             _         -> "/dev/stdout"
       withFile fileName WriteMode $ \h -> do
-        (T.hPutStr h . T.unlines . rights) output
+        (T.hPutStr h . T.intercalate "\r\n" . rights) output
  where
   monthNo :: Month -> Int
   monthNo m = fromEnum m + 1
