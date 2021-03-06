@@ -25,6 +25,7 @@ executable posten-haskell
                      , aeson
                      , attoparsec
                      , bytestring
+                     , req
                      , text
                      , time
   -- hs-source-dirs:

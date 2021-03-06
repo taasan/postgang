@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Main
   ( main
@@ -26,10 +27,14 @@ import Control.Applicative
 import Control.Monad
   ( join
   )
+import Control.Monad.IO.Class
 import qualified Data.Attoparsec.Text as P
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Data.Foldable
   ( traverse_
+  )
+import Data.Maybe
+  ( isJust
   )
 import Data.Time.Calendar
   ( toGregorian
@@ -37,6 +42,22 @@ import Data.Time.Calendar
 import Data.Time.Clock
   ( UTCTime (utctDay)
   , getCurrentTime
+  )
+import Network.HTTP.Req
+  ( GET (GET)
+  , NoReqBody (NoReqBody)
+  , QueryParam (queryParam)
+  , defaultHttpConfig
+  , header
+  , https
+  , jsonResponse
+  , req
+  , responseBody
+  , runReq
+  , (/:)
+  )
+import System.Environment
+  ( lookupEnv
   )
 import Text.Printf
   ( printf
@@ -115,14 +136,35 @@ parseMonth =
     <|> (November <$ P.string "november")
     <|> (December <$ P.string "desember")
 
+getData :: IO Entry
+getData = runReq defaultHttpConfig $ do
+  bs <- req
+    GET
+    (  https "www.posten.no"
+    /: "levering-av-post-2020"
+    /: "_"
+    /: "component"
+    /: "main"
+    /: "1"
+    /: "leftRegion"
+    /: "1"
+    )
+    NoReqBody
+    jsonResponse
+    options
+  liftIO $ pure (responseBody bs)
+ where
+  options = header "x-requested-with" "XMLHttpRequest"
+    <> queryParam "postCode" (Just @Int 7530)
+
 main :: IO ()
 main = do
-  s     <- BL.getContents
-  -- today :: (Integer,Int,Int) -- :: (year,month,day)
+  entry <- getData
   today <- toGregorian . utctDay <$> getCurrentTime
-  case decode s :: Maybe Entry of
-    Just res -> traverse_ T.putStrLn $ ical today res
-    _        -> error $ "No parse: " <> BL.unpack s
+  cgi   <- lookupEnv "GATEWAY_INTERFACE"
+  traverse_ T.putStrLn $ if isJust cgi then httpPreamble else []
+
+  traverse_ T.putStrLn $ ical today entry
  where
   monthNo :: Month -> Int
   monthNo m = fromEnum m + 1
@@ -146,6 +188,9 @@ main = do
         , T.pack $ printf "DTSTAMP:%d%02d%02dT000000" thisYear thisMonth thisDay
         , "END:VEVENT"
         ]
+  httpPreamble :: [T.Text]
+  httpPreamble = ["Content-Type:text/calendar;charset=utf8", ""]
+
   preamble :: [T.Text]
   preamble =
     [ "BEGIN:VCALENDAR"
