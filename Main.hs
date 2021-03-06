@@ -28,8 +28,14 @@ import Control.Monad
   ( join
   )
 import Control.Monad.IO.Class
+  ( MonadIO (liftIO)
+  )
 import qualified Data.Attoparsec.Text as P
 import qualified Data.ByteString.Lazy.Char8 as BL
+import Data.Either
+  ( isLeft
+  , rights
+  )
 import Data.Foldable
   ( traverse_
   )
@@ -42,6 +48,9 @@ import Data.Time.Calendar
 import Data.Time.Clock
   ( UTCTime (utctDay)
   , getCurrentTime
+  )
+import GHC.TopHandler
+  ( runIO
   )
 import Network.HTTP.Req
   ( GET (GET)
@@ -57,7 +66,12 @@ import Network.HTTP.Req
   , (/:)
   )
 import System.Environment
-  ( lookupEnv
+  ( getArgs
+  , lookupEnv
+  )
+import System.IO
+  ( IOMode (WriteMode)
+  , withFile
   )
 import Text.Printf
   ( printf
@@ -161,33 +175,46 @@ main :: IO ()
 main = do
   entry <- getData
   today <- toGregorian . utctDay <$> getCurrentTime
-  cgi   <- lookupEnv "GATEWAY_INTERFACE"
-  traverse_ T.putStrLn $ if isJust cgi then httpPreamble else []
-
-  traverse_ T.putStrLn $ ical today entry
+  argv  <- getArgs
+  let output = ical today entry
+  if any isLeft output
+    then error $ "Invalid input" <> show entry
+    else do
+      let fileName = case argv of
+            ("-" : _) -> "/dev/stdout"
+            (x   : _) -> x
+            _         -> "/dev/stdout"
+      withFile fileName WriteMode $ \h -> do
+        (T.hPutStr h . T.unlines . rights) output
  where
   monthNo :: Month -> Int
   monthNo m = fromEnum m + 1
-  parse :: T.Text -> DeliveryDay
-  parse day = case P.parseOnly parseDeliveryDay day of
-    Left  e -> error e
-    Right d -> d
-  getDays :: [T.Text] -> [DeliveryDay]
+  parse :: T.Text -> Either String DeliveryDay
+  parse day = P.parseOnly parseDeliveryDay day
+  getDays :: [T.Text] -> [Either String DeliveryDay]
   getDays = fmap parse
-  ical :: (Integer, Int, Int) -> Entry -> [T.Text]
-  ical today (Entry days _) = preamble <> (getDays days >>= event today)
-  event :: (Integer, Int, Int) -> DeliveryDay -> [T.Text]
-  event (thisYear, thisMonth, thisDay) dd@(DeliveryDay dayName d m) =
+  ical :: (Integer, Int, Int) -> Entry -> [Either String T.Text]
+  ical today (Entry days _) =
+    (Right <$> preamble) <> (getDays days >>= event today)
+  event
+    :: (Integer, Int, Int)
+    -> Either String DeliveryDay
+    -> [Either String T.Text]
+  event (thisYear, thisMonth, thisDay) (Right dd@(DeliveryDay dayName d m)) =
     let year =
             if thisMonth == 12 && m /= December then thisYear + 1 else thisYear
-    in  [ "BEGIN:VEVENT"
-        , T.pack $ printf "UID:%s" $ tshow dd
-        , T.pack $ printf "SUMMARY:Posten kommer %s" $ show dayName
-        , T.pack $ printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
-        , "DURATION:P1D"
-        , T.pack $ printf "DTSTAMP:%d%02d%02dT000000" thisYear thisMonth thisDay
-        , "END:VEVENT"
-        ]
+    in
+      Right
+        <$> [ "BEGIN:VEVENT"
+            , T.pack $ printf "UID:%s" $ tshow dd
+            , T.pack $ printf "SUMMARY:Posten kommer %s" $ show dayName
+            , T.pack $ printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
+            , "DURATION:P1D"
+            , T.pack
+              $ printf "DTSTAMP:%d%02d%02dT000000" thisYear thisMonth thisDay
+            , "END:VEVENT"
+            ]
+  event _ (Left x) = [Left x]
   httpPreamble :: [T.Text]
   httpPreamble = ["Content-Type:text/calendar;charset=utf8", ""]
 
