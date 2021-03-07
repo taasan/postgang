@@ -39,6 +39,9 @@ import Data.Time.Clock
   , getCurrentTime
   )
 import Data.Time.Format
+  ( defaultTimeLocale
+  , formatTime
+  )
 import Network.HTTP.Conduit
   ( Request (method, requestHeaders)
   , parseUrlThrow
