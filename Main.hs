@@ -19,6 +19,9 @@ import Control.Applicative
   ( empty
   , (<|>)
   )
+import Data.Attoparsec.Combinator
+  ( (<?>)
+  )
 import qualified Data.Attoparsec.Text as P
 import Data.Either
   ( isLeft
@@ -28,12 +31,14 @@ import Data.String
   ( IsString (..)
   )
 import Data.Time.Calendar
-  ( toGregorian
+  ( DayOfWeek (..)
+  , toGregorian
   )
 import Data.Time.Clock
   ( UTCTime (utctDay)
   , getCurrentTime
   )
+import Data.Time.Format
 import Network.HTTP.Conduit
   ( Request (method, requestHeaders)
   , parseUrlThrow
@@ -54,6 +59,7 @@ import Text.Printf
   ( printf
   )
 import qualified Text.Show as Show
+
 data Entry =
   Entry
     { nextDeliveryDays :: [T.Text]
@@ -81,14 +87,6 @@ data Month
   | December
   deriving (Show, Eq, Enum)
 
-data DayOfWeek
-  = Monday
-  | Tuesday
-  | Wednesday
-  | Thursday
-  | Friday
-  deriving (Show, Eq, Enum)
-
 data DeliveryDay =
   DeliveryDay
     { day :: DayOfWeek
@@ -99,37 +97,51 @@ data DeliveryDay =
 
 -- Generic show
 show :: (Show a, IsString b) => a -> b
-show x = fromString $ Show.show x
+show = fromString . Show.show
 
 parseDeliveryDay :: P.Parser DeliveryDay
 parseDeliveryDay =
   DeliveryDay
-    <$> parseWeekDay
-    <*> (P.skipSpace >> P.decimal)
-    <*> (P.char '.' >> P.skipSpace >> parseMonth)
+    <$>- parseWeekDay
+    <*>- P.decimal
+    <*>- parseMonth
+    <?>  "parseDeliveryDay"
+
+(<$>-) :: (a -> b) -> P.Parser a -> P.Parser b
+f <$>- p = f <$> skipUntil p
+
+(<*>-) :: P.Parser (a -> b) -> P.Parser a -> P.Parser b
+f <*>- p = f <*> skipUntil p
+
+skipUntil :: P.Parser a -> P.Parser a
+skipUntil p = P.try p <|> (P.anyChar >> skipUntil p)
 
 parseWeekDay :: P.Parser DayOfWeek
-parseWeekDay =
-  (Monday <$ P.string "mandag")
-    <|> (Tuesday <$ P.string "tirsdag")
-    <|> (Wednesday <$ P.string "onsdag")
-    <|> (Thursday <$ P.string "torsdag")
-    <|> (Friday <$ P.string "fredag")
+parseWeekDay = do
+  (Monday ¤ "mandag")
+    <|> (Tuesday ¤ "tirsdag")
+    <|> (Wednesday ¤ "onsdag")
+    <|> (Thursday ¤ "torsdag")
+    <|> (Friday ¤ "fredag")
+    <?> "parseWeekDay"
 
 parseMonth :: P.Parser Month
 parseMonth =
-  (January <$ P.string "januar")
-    <|> (February <$ P.string "februar")
-    <|> (March <$ P.string "mars")
-    <|> (April <$ P.string "april")
-    <|> (May <$ P.string "mai")
-    <|> (June <$ P.string "juni")
-    <|> (July <$ P.string "juli")
-    <|> (August <$ P.string "august")
-    <|> (September <$ P.string "september")
-    <|> (October <$ P.string "oktober")
-    <|> (November <$ P.string "november")
-    <|> (December <$ P.string "desember")
+  (January ¤ "januar")
+    <|> (February ¤ "februar")
+    <|> (March ¤ "mars")
+    <|> (April ¤ "april")
+    <|> (May ¤ "mai")
+    <|> (June ¤ "juni")
+    <|> (July ¤ "juli")
+    <|> (August ¤ "august")
+    <|> (September ¤ "september")
+    <|> (October ¤ "oktober")
+    <|> (November ¤ "november")
+    <|> (December ¤ "desember")
+
+(¤) :: a -> T.Text -> P.Parser a
+c ¤ s = c <$ P.string s
 
 main :: IO ()
 main = do
@@ -147,11 +159,12 @@ main = do
 
   response <- httpJSON request
   let entry = getResponseBody response
-  today <- toGregorian . utctDay <$> getCurrentTime
-  argv  <- getArgs
-  let output = ical today entry
+  now  <- getCurrentTime
+
+  argv <- getArgs
+  let output = ical now entry
   if any isLeft output
-    then error $ "Invalid input" <> show entry
+    then error $ "Invalid input" <> show entry <> "\n" <> show output
     else do
       let fileName = case argv of
             ("-" : _) -> "/dev/stdout"
@@ -160,32 +173,26 @@ main = do
       withFile fileName WriteMode $ \h -> do
         (T.hPutStr h . T.intercalate "\r\n" . rights) output
  where
-  parse :: T.Text -> Either String DeliveryDay
-  parse = P.parseOnly parseDeliveryDay
-  getDays :: [T.Text] -> [Either String DeliveryDay]
-  getDays = fmap parse
-  ical :: (Integer, Int, Int) -> Entry -> [Either String T.Text]
-  ical today (Entry days _) =
+  ical :: UTCTime -> Entry -> [Either String T.Text]
+  ical now (Entry days _) =
     (Right <$> preamble)
-      <> (getDays days >>= event today)
+      <> (days >>= event now . P.parseOnly parseDeliveryDay)
       <> (Right <$> ["END:VCALENDAR", ""])
-  event
-    :: (Integer, Int, Int)
-    -> Either String DeliveryDay
-    -> [Either String T.Text]
-  event (thisYear, thisMonth, thisDay) (Right dd@(DeliveryDay dayName d m)) =
-    let year =
-            if thisMonth == 12 && m /= December then thisYear + 1 else thisYear
+  event :: UTCTime -> Either String DeliveryDay -> [Either String T.Text]
+  event now (Right dd@(DeliveryDay dayName d m)) =
+    let
+      year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
+      (thisYear, thisMonth, _) = (toGregorian . utctDay) now
     in
       Right
         <$> [ "BEGIN:VEVENT"
-            , T.pack $ printf "UID:%s" (show dd :: T.Text)
-            , T.pack
-              $ printf "SUMMARY:Posten kommer %s" (show dayName :: T.Text)
+            , "UID:" <> show dd
+            , "SUMMARY:Posten kommer " <> show dayName
             , T.pack $ printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
             , "DURATION:P1D"
             , T.pack
-              $ printf "DTSTAMP:%d%02d%02dT000000" thisYear thisMonth thisDay
+            $  "DTSTAMP:"
+            <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
             , "END:VEVENT"
             ]
   event _ (Left x) = [Left x]
