@@ -4,35 +4,49 @@ module Main
   ( main
   )
 where
-import Data.Aeson
-  ( FromJSON (parseJSON)
-  , Value (Object)
-  , (.:)
-  )
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
 import Prelude hiding
   ( show
   )
 
 import Control.Applicative
-  ( empty
+  ( liftA2
   , (<|>)
   )
-import Data.Attoparsec.Combinator
-  ( (<?>)
-  )
-import qualified Data.Attoparsec.Text as P
-import Data.Either
-  ( isLeft
-  , rights
+import Data.Maybe
+  ( catMaybes
+  , isNothing
+  , mapMaybe
   )
 import Data.String
   ( IsString (..)
   )
+import System.Environment
+  ( getArgs
+  )
+import System.IO
+  ( IOMode (WriteMode)
+  , hPutStr
+  , withFile
+  )
+import qualified Text.ParserCombinators.ReadP as P
+import Text.Printf
+  ( printf
+  )
+import qualified Text.Show as Show
+
+import Control.Monad
+  ( replicateM
+  )
+import Data.Char
+  ( chr
+  , isDigit
+  , isHexDigit
+  )
+import Data.List
+  ( intercalate
+  )
 import Data.Time.Calendar
-  ( DayOfWeek (..)
-  , toGregorian
+  ( toGregorian
   )
 import Data.Time.Clock
   ( UTCTime (utctDay)
@@ -42,38 +56,28 @@ import Data.Time.Format
   ( defaultTimeLocale
   , formatTime
   )
-import Network.HTTP.Conduit
-  ( Request (method, requestHeaders)
-  , parseUrlThrow
+import Numeric
+  ( readHex
   )
-import Network.HTTP.Simple
-  ( getResponseBody
-  , httpJSON
-  , setRequestQueryString
+import System.Process
+  ( proc
+  , readCreateProcess
   )
-import System.Environment
-  ( getArgs
-  )
-import System.IO
-  ( IOMode (WriteMode)
-  , withFile
-  )
-import Text.Printf
-  ( printf
-  )
-import qualified Text.Show as Show
 
-data Entry =
+newtype Entry =
   Entry
-    { nextDeliveryDays :: [T.Text]
-    , isStreetAddressReq :: Bool
+    { nextDeliveryDays :: [String]
+    -- , isStreetAddressReq :: Bool
     }
   deriving (Show)
 
-instance FromJSON Entry where
-  parseJSON (Object v) =
-    Entry <$> v .: "nextDeliveryDays" <*> v .: "isStreetAddressReq"
-  parseJSON _ = empty
+data DayOfWeek
+  = Monday
+  | Tuesday
+  | Wednesday
+  | Thursday
+  | Friday
+  deriving (Show, Eq, Enum)
 
 data Month
   = January
@@ -98,37 +102,111 @@ data DeliveryDay =
     }
   deriving (Show)
 
+data JsonValue
+  = JsonObject [(String, JsonValue)]
+  | JsonArray [JsonValue]
+  | JsonString String
+  | JsonBool Bool
+  deriving (Show)
+
+parseEntry :: JsonValue -> Maybe Entry
+parseEntry (JsonObject v) = do
+  days <- lookup "nextDeliveryDays" v
+  pure $ Entry (extractJsonStrings days)
+
+parseEntry _ = Nothing
+
 -- Generic show
 show :: (Show a, IsString b) => a -> b
 show = fromString . Show.show
 
-parseDeliveryDay :: P.Parser DeliveryDay
-parseDeliveryDay =
-  DeliveryDay
-    <$>- parseWeekDay
-    <*>- P.decimal
-    <*>- parseMonth
-    <?>  "parseDeliveryDay"
+type Parser = P.ReadP
 
-(<$>-) :: (a -> b) -> P.Parser a -> P.Parser b
+jsonArray :: Parser JsonValue
+jsonArray = JsonArray <$> (P.char '[' *> ws *> elements <* ws <* P.char ']')
+ where
+  elements :: Parser [JsonValue]
+  elements = P.sepBy jsonValue (ws *> P.char ',' <* ws)
+
+jsonValue :: Parser JsonValue
+jsonValue = jsonObject <|> jsonArray <|> jsonString <|> jsonBool
+
+jsonBool :: Parser JsonValue
+jsonBool = jsonTrue <|> jsonFalse
+ where
+  jsonTrue  = JsonBool True <$ P.string "true"
+  jsonFalse = JsonBool False <$ P.string "false"
+
+ws :: P.ReadP ()
+ws = P.skipSpaces
+
+jsonObject :: Parser JsonValue
+jsonObject =
+  JsonObject
+    <$> (  P.char '{'
+        *> ws
+        *> P.sepBy pair (ws *> P.char ',' <* ws)
+        <* ws
+        <* P.char '}'
+        )
+  where pair = liftA2 (,) (stringLiteral <* ws <* P.char ':' <* ws) jsonValue
+
+-- | Parser for characters as unicode in input
+escapeUnicode :: Parser Char
+escapeUnicode =
+  chr . fst . head . readHex <$> replicateM 4 (P.satisfy isHexDigit)
+
+-- | Parser for characters that are scaped in the input
+escapeChar :: Parser Char
+escapeChar =
+  ('"' <$ P.string "\\\"")
+    <|> ('\\' <$ P.string "\\\\")
+    <|> ('/' <$ P.string "\\/")
+    <|> ('\b' <$ P.string "\\b")
+    <|> ('\f' <$ P.string "\\f")
+    <|> ('\n' <$ P.string "\\n")
+    <|> ('\r' <$ P.string "\\r")
+    <|> ('\t' <$ P.string "\\t")
+    <|> (P.string "\\u" *> escapeUnicode)
+
+-- | Parser of a character that is not " or \\
+normalChar :: Parser Char
+normalChar = P.satisfy ((&&) <$> (/= '"') <*> (/= '\\'))
+
+-- | Parser of a string that is between double quotes (not considering any double quots that are scaped)
+stringLiteral :: Parser String
+stringLiteral = P.char '"' *> P.many (normalChar <|> escapeChar) <* P.char '"'
+
+-- | Parser of literal json string values
+jsonString :: Parser JsonValue
+jsonString = JsonString <$> stringLiteral
+
+
+parseDeliveryDay :: Parser DeliveryDay
+parseDeliveryDay = DeliveryDay <$>- parseWeekDay <*>- integer <*>- parseMonth
+ where
+  integer :: Parser Int
+  integer = read <$> digits
+  digits  = P.munch1 isDigit
+
+(<$>-) :: (a -> b) -> Parser a -> Parser b
 f <$>- p = f <$> skipUntil p
 
-(<*>-) :: P.Parser (a -> b) -> P.Parser a -> P.Parser b
+(<*>-) :: Parser (a -> b) -> Parser a -> Parser b
 f <*>- p = f <*> skipUntil p
 
-skipUntil :: P.Parser a -> P.Parser a
-skipUntil p = P.try p <|> (P.anyChar >> skipUntil p)
+skipUntil :: Parser a -> Parser a
+skipUntil p = p <|> (P.get *> skipUntil p)
 
-parseWeekDay :: P.Parser DayOfWeek
+parseWeekDay :: Parser DayOfWeek
 parseWeekDay = do
   (Monday ¤ "mandag")
     <|> (Tuesday ¤ "tirsdag")
     <|> (Wednesday ¤ "onsdag")
     <|> (Thursday ¤ "torsdag")
     <|> (Friday ¤ "fredag")
-    <?> "parseWeekDay"
 
-parseMonth :: P.Parser Month
+parseMonth :: Parser Month
 parseMonth =
   (January ¤ "januar")
     <|> (February ¤ "februar")
@@ -143,30 +221,37 @@ parseMonth =
     <|> (November ¤ "november")
     <|> (December ¤ "desember")
 
-(¤) :: a -> T.Text -> P.Parser a
+(¤) :: a -> String -> Parser a
 c ¤ s = c <$ P.string s
+
+parse :: P.ReadP a -> String -> Maybe a
+parse parser str = case P.readP_to_S parser str of
+  []             -> Nothing
+  ((res, _) : _) -> Just res
+
+(<$?>) :: (a -> Maybe b) -> [a] -> [b]
+(<$?>) = mapMaybe
+
+infixl 4 <$?>
+
+extractJsonStrings :: JsonValue -> [String]
+extractJsonStrings (JsonArray xs) = getJsonString <$?> xs
+extractJsonStrings _              = []
+
+getJsonString :: JsonValue -> Maybe String
+getJsonString (JsonString x) = pure x
+getJsonString _              = mempty
 
 main :: IO ()
 main = do
-  initialRequest <-
-    parseUrlThrow
-      "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1"
-  let postCode :: Int
-      postCode = 7530
-      request =
-        setRequestQueryString [("postCode", Just (show postCode))]
-          $ initialRequest
-              { requestHeaders = [("x-requested-with", "XMLHttpRequest")]
-              , method         = "GET"
-              }
-
-  response <- httpJSON request
-  let entry = getResponseBody response
-  now  <- getCurrentTime
-
+  now   <- getCurrentTime
+  str   <- fetchData
+  entry <- case parse jsonValue str >>= parseEntry of
+    Just value -> pure value
+    _          -> error $ "Invalid data: " <> str
   argv <- getArgs
   let output = ical now entry
-  if any isLeft output
+  if any isNothing output
     then error $ "Invalid input" <> show entry <> "\n" <> show output
     else do
       let fileName = case argv of
@@ -174,32 +259,30 @@ main = do
             (x   : _) -> x
             _         -> "/dev/stdout"
       withFile fileName WriteMode $ \h -> do
-        (T.hPutStr h . T.intercalate "\r\n" . rights) output
+        (hPutStr h . intercalate "\r\n") $ catMaybes output
  where
-  ical :: UTCTime -> Entry -> [Either String T.Text]
-  ical now (Entry days _) =
-    (Right <$> preamble)
-      <> (days >>= event now . P.parseOnly parseDeliveryDay)
-      <> (Right <$> ["END:VCALENDAR", ""])
-  event :: UTCTime -> Either String DeliveryDay -> [Either String T.Text]
-  event now (Right dd@(DeliveryDay dayName d m)) =
+  ical :: UTCTime -> Entry -> [Maybe String]
+  ical now (Entry days) =
+    (Just <$> preamble)
+      <> (days >>= event now . parse parseDeliveryDay)
+      <> (Just <$> ["END:VCALENDAR", ""])
+  event :: UTCTime -> Maybe DeliveryDay -> [Maybe String]
+  event now (Just dd@(DeliveryDay dayName d m)) =
     let
       year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
       (thisYear, thisMonth, _) = (toGregorian . utctDay) now
     in
-      Right
+      Just
         <$> [ "BEGIN:VEVENT"
             , "UID:" <> show dd
             , "SUMMARY:Posten kommer " <> show dayName
-            , T.pack $ printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
+            , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
             , "DURATION:P1D"
-            , T.pack
-            $  "DTSTAMP:"
-            <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
+            , "DTSTAMP:" <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
             , "END:VEVENT"
             ]
-  event _ (Left x) = [Left x]
-  preamble :: [T.Text]
+  event _ _ = []
+  preamble :: [String]
   preamble =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
@@ -207,3 +290,14 @@ main = do
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
+  fetchData :: IO String
+  fetchData = readCreateProcess
+    (proc
+      "curl"
+      [ "-sSL"
+      , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode=7530"
+      , "-H"
+      , "x-requested-with: XMLHttpRequest"
+      ]
+    )
+    ""
