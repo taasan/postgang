@@ -63,6 +63,9 @@ import System.Process
   ( proc
   , readCreateProcess
   )
+import Text.ParserCombinators.ReadP
+  ( (<++)
+  )
 
 newtype Entry =
   Entry
@@ -103,11 +106,14 @@ data DeliveryDay =
   deriving (Show)
 
 data JsonValue
-  = JsonObject [(String, JsonValue)]
-  | JsonArray [JsonValue]
-  | JsonString String
+  = JsonNull
   | JsonBool Bool
-  deriving (Show)
+  | JsonNumber Double
+  | JsonString String
+  | JsonArray [JsonValue]
+  | JsonObject [(String, JsonValue)]
+  deriving (Show, Eq)
+
 
 parseEntry :: JsonValue -> Maybe Entry
 parseEntry (JsonObject v) = do
@@ -129,13 +135,56 @@ jsonArray = JsonArray <$> (P.char '[' *> ws *> elements <* ws <* P.char ']')
   elements = P.sepBy jsonValue (ws *> P.char ',' <* ws)
 
 jsonValue :: Parser JsonValue
-jsonValue = jsonObject <|> jsonArray <|> jsonString <|> jsonBool
+jsonValue =
+  jsonObject
+    <|> jsonArray
+    <|> jsonString
+    <|> jsonBool
+    <|> jsonNull
+    <|> jsonNumber
 
 jsonBool :: Parser JsonValue
-jsonBool = jsonTrue <|> jsonFalse
+jsonBool = JsonBool <$> (jsonTrue <|> jsonFalse)
  where
-  jsonTrue  = JsonBool True <$ P.string "true"
-  jsonFalse = JsonBool False <$ P.string "false"
+  jsonTrue  = True ¤ "true"
+  jsonFalse = False ¤ "false"
+
+jsonNull :: Parser JsonValue
+jsonNull = JsonNull ¤ "null"
+
+
+-- | Parser for json number values
+jsonNumber :: Parser JsonValue
+jsonNumber = JsonNumber <$> doubleLiteral
+ where
+    {-
+    See page 12 of
+    http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf
+    -}
+    -- Parser for doubles
+  doubleLiteral :: Parser Double
+  doubleLiteral =
+    doubleFromParts
+      <$> (minus <|> pure 1)
+      <*> (read <$> digits)
+      <*> ((read <$> (('0' :) <$> ((:) <$> P.char '.' <*> digits))) <++ pure 0)
+      <*> (   (e *> ((*) <$> (plus <|> minus <|> pure 1) <*> (read <$> digits)))
+          <++ pure 0
+          )
+
+  minus = (-1) <$ P.char '-'
+  plus  = 1 <$ P.char '+'
+  e     = P.char 'e' <|> P.char 'E'
+
+  -- | Build a Double from its parts (sign, integral part, decimal part, exponent)
+  doubleFromParts
+    :: Integer  -- sign
+    -> Integer  -- integral part
+    -> Double   -- decimal part
+    -> Integer  -- exponent
+    -> Double
+  doubleFromParts sign int dec expo =
+    fromIntegral sign * (fromIntegral int + dec) * (10 ^^ expo)
 
 ws :: P.ReadP ()
 ws = P.skipSpaces
@@ -187,7 +236,9 @@ parseDeliveryDay = DeliveryDay <$>- parseWeekDay <*>- integer <*>- parseMonth
  where
   integer :: Parser Int
   integer = read <$> digits
-  digits  = P.munch1 isDigit
+
+digits :: P.ReadP String
+digits = P.munch1 isDigit
 
 (<$>-) :: (a -> b) -> Parser a -> Parser b
 f <$>- p = f <$> skipUntil p
@@ -246,7 +297,7 @@ main :: IO ()
 main = do
   now   <- getCurrentTime
   str   <- fetchData
-  entry <- case parse jsonValue str >>= parseEntry of
+  entry <- case parse (jsonValue <* P.eof) str >>= parseEntry of
     Just value -> pure value
     _          -> error $ "Invalid data: " <> str
   argv <- getArgs
@@ -290,6 +341,7 @@ main = do
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
+
   fetchData :: IO String
   fetchData = readCreateProcess
     (proc
