@@ -198,7 +198,7 @@ escapeChar =
 
 -- | Parser of a character that is not " or \\
 normalChar :: Parser Char
-normalChar = P.satisfy ((&&) <$> (/= '"') <*> (/= '\\'))
+normalChar = P.satisfy (\c -> c /= '"' && c /= '\\')
 
 -- | Parser of a string that is between double quotes (not considering any double quots that are scaped)
 stringLiteral :: Parser String
