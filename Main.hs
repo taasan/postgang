@@ -4,13 +4,26 @@ module Main
   ( main
   )
 where
+
 import Prelude hiding
   ( show
   )
 
 import Control.Applicative
-  ( liftA2
-  , (<|>)
+  ( Alternative (..)
+  , liftA2
+  )
+import Control.Monad
+  ( replicateM
+  )
+
+import Data.Char
+  ( chr
+  , isDigit
+  , isHexDigit
+  )
+import Data.List
+  ( intercalate
   )
 import Data.Maybe
   ( catMaybes
@@ -20,6 +33,18 @@ import Data.Maybe
 import Data.String
   ( IsString (..)
   )
+import Data.Time
+  ( UTCTime (utctDay)
+  , defaultTimeLocale
+  , formatTime
+  , getCurrentTime
+  , toGregorian
+  )
+
+import Numeric
+  ( readHex
+  )
+
 import System.Environment
   ( getArgs
   )
@@ -28,44 +53,19 @@ import System.IO
   , hPutStr
   , withFile
   )
-import qualified Text.ParserCombinators.ReadP as P
-import Text.Printf
-  ( printf
-  )
-import qualified Text.Show as Show
-
-import Control.Monad
-  ( replicateM
-  )
-import Data.Char
-  ( chr
-  , isDigit
-  , isHexDigit
-  )
-import Data.List
-  ( intercalate
-  )
-import Data.Time.Calendar
-  ( toGregorian
-  )
-import Data.Time.Clock
-  ( UTCTime (utctDay)
-  , getCurrentTime
-  )
-import Data.Time.Format
-  ( defaultTimeLocale
-  , formatTime
-  )
-import Numeric
-  ( readHex
-  )
 import System.Process
   ( proc
   , readCreateProcess
   )
-import Text.ParserCombinators.ReadP
-  ( (<++)
+
+import qualified Text.ParserCombinators.ReadP as P
+import Text.Printf
+  ( printf
   )
+import Text.Read
+  ( readMaybe
+  )
+import qualified Text.Show as Show
 
 newtype Entry =
   Entry
@@ -152,39 +152,17 @@ jsonBool = JsonBool <$> (jsonTrue <|> jsonFalse)
 jsonNull :: Parser JsonValue
 jsonNull = JsonNull ¤ "null"
 
-
 -- | Parser for json number values
 jsonNumber :: Parser JsonValue
-jsonNumber = JsonNumber <$> doubleLiteral
+jsonNumber = do
+  JsonNumber <$> (P.munch1 isNumberChar >>= f readMaybe)
  where
-    {-
-    See page 12 of
-    http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf
-    -}
-    -- Parser for doubles
-  doubleLiteral :: Parser Double
-  doubleLiteral =
-    doubleFromParts
-      <$> (minus <|> pure 1)
-      <*> (read <$> digits)
-      <*> ((read <$> (('0' :) <$> ((:) <$> P.char '.' <*> digits))) <++ pure 0)
-      <*> (   (e *> ((*) <$> (plus <|> minus <|> pure 1) <*> (read <$> digits)))
-          <++ pure 0
-          )
-
-  minus = (-1) <$ P.char '-'
-  plus  = 1 <$ P.char '+'
-  e     = P.char 'e' <|> P.char 'E'
-
-  -- | Build a Double from its parts (sign, integral part, decimal part, exponent)
-  doubleFromParts
-    :: Integer  -- sign
-    -> Integer  -- integral part
-    -> Double   -- decimal part
-    -> Integer  -- exponent
-    -> Double
-  doubleFromParts sign int dec expo =
-    fromIntegral sign * (fromIntegral int + dec) * (10 ^^ expo)
+  isNumberChar c =
+    isDigit c || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'
+  f :: Alternative f => (t -> Maybe a) -> t -> f a
+  f g x = case g x of
+    Just res -> pure res
+    _        -> empty
 
 ws :: P.ReadP ()
 ws = P.skipSpaces
@@ -208,14 +186,14 @@ escapeUnicode =
 -- | Parser for characters that are scaped in the input
 escapeChar :: Parser Char
 escapeChar =
-  ('"' <$ P.string "\\\"")
-    <|> ('\\' <$ P.string "\\\\")
-    <|> ('/' <$ P.string "\\/")
-    <|> ('\b' <$ P.string "\\b")
-    <|> ('\f' <$ P.string "\\f")
-    <|> ('\n' <$ P.string "\\n")
-    <|> ('\r' <$ P.string "\\r")
-    <|> ('\t' <$ P.string "\\t")
+  ('"' ¤ "\\\"")
+    <|> ('\\' ¤ "\\\\")
+    <|> ('/' ¤ "\\/")
+    <|> ('\b' ¤ "\\b")
+    <|> ('\f' ¤ "\\f")
+    <|> ('\n' ¤ "\\n")
+    <|> ('\r' ¤ "\\r")
+    <|> ('\t' ¤ "\\t")
     <|> (P.string "\\u" *> escapeUnicode)
 
 -- | Parser of a character that is not " or \\
@@ -232,10 +210,8 @@ jsonString = JsonString <$> stringLiteral
 
 
 parseDeliveryDay :: Parser DeliveryDay
-parseDeliveryDay = DeliveryDay <$>- parseWeekDay <*>- integer <*>- parseMonth
- where
-  integer :: Parser Int
-  integer = read <$> digits
+parseDeliveryDay =
+  DeliveryDay <$>- parseWeekDay <*>- (read <$> digits) <*>- parseMonth
 
 digits :: P.ReadP String
 digits = P.munch1 isDigit
@@ -289,9 +265,9 @@ extractJsonStrings :: JsonValue -> [String]
 extractJsonStrings (JsonArray xs) = getJsonString <$?> xs
 extractJsonStrings _              = []
 
-getJsonString :: JsonValue -> Maybe String
+getJsonString :: Alternative f => JsonValue -> f String
 getJsonString (JsonString x) = pure x
-getJsonString _              = mempty
+getJsonString _              = empty
 
 main :: IO ()
 main = do
