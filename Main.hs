@@ -12,6 +12,7 @@ import Prelude hiding
 import Control.Applicative
   ( Alternative (..)
   , liftA2
+  , optional
   )
 import Control.Monad
   ( replicateM
@@ -21,6 +22,7 @@ import Data.Char
   ( chr
   , isDigit
   , isHexDigit
+  , ord
   )
 import Data.List
   ( intercalate
@@ -28,7 +30,6 @@ import Data.List
 import Data.Maybe
   ( catMaybes
   , isNothing
-  , mapMaybe
   )
 import Data.String
   ( IsString (..)
@@ -58,20 +59,23 @@ import System.Process
   , readCreateProcess
   )
 
+import Data.Bits
+  ( Bits (shiftL)
+  )
+import Data.Functor
+  ( void
+  )
+import Data.Ix
+  ( inRange
+  )
 import qualified Text.ParserCombinators.ReadP as P
 import Text.Printf
   ( printf
   )
-import Text.Read
-  ( readMaybe
-  )
 import qualified Text.Show as Show
 
 newtype Entry =
-  Entry
-    { nextDeliveryDays :: [String]
-    -- , isStreetAddressReq :: Bool
-    }
+  Entry [String]
   deriving (Show)
 
 data DayOfWeek
@@ -114,13 +118,13 @@ data JsonValue
   | JsonObject [(String, JsonValue)]
   deriving (Show, Eq)
 
-
-parseEntry :: JsonValue -> Maybe Entry
-parseEntry (JsonObject v) = do
-  days <- lookup "nextDeliveryDays" v
-  pure $ Entry (extractJsonStrings days)
-
-parseEntry _ = Nothing
+entryP :: Parser Entry
+entryP = do
+  void . skipUntil $ P.string "\"nextDeliveryDays\"" <* ws <* P.char ':' <* ws
+  Entry <$> (P.char '[' *> ws *> elements <* ws <* P.char ']')
+ where
+  elements :: Parser [String]
+  elements = P.sepBy jsonStringP (ws *> P.char ',' <* ws)
 
 -- Generic show
 show :: (Show a, IsString b) => a -> b
@@ -128,92 +132,51 @@ show = fromString . Show.show
 
 type Parser = P.ReadP
 
-jsonArray :: Parser JsonValue
-jsonArray = JsonArray <$> (P.char '[' *> ws *> elements <* ws <* P.char ']')
- where
-  elements :: Parser [JsonValue]
-  elements = P.sepBy jsonValue (ws *> P.char ',' <* ws)
-
-jsonValue :: Parser JsonValue
-jsonValue =
-  jsonObject
-    <|> jsonArray
-    <|> jsonString
-    <|> jsonBool
-    <|> jsonNull
-    <|> jsonNumber
-
-jsonBool :: Parser JsonValue
-jsonBool = JsonBool <$> (jsonTrue <|> jsonFalse)
- where
-  jsonTrue  = True ¤ "true"
-  jsonFalse = False ¤ "false"
-
-jsonNull :: Parser JsonValue
-jsonNull = JsonNull ¤ "null"
-
--- | Parser for json number values
-jsonNumber :: Parser JsonValue
-jsonNumber = do
-  JsonNumber <$> (P.munch1 isNumberChar >>= f readMaybe)
- where
-  isNumberChar c =
-    isDigit c || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'
-  f :: Alternative f => (t -> Maybe a) -> t -> f a
-  f g x = case g x of
-    Just res -> pure res
-    _        -> empty
-
 ws :: P.ReadP ()
 ws = P.skipSpaces
 
-jsonObject :: Parser JsonValue
-jsonObject =
-  JsonObject
-    <$> (  P.char '{'
-        *> ws
-        *> P.sepBy pair (ws *> P.char ',' <* ws)
-        <* ws
-        <* P.char '}'
-        )
-  where pair = liftA2 (,) (stringLiteral <* ws <* P.char ':' <* ws) jsonValue
+jsonStringP :: Parser String
+jsonStringP = P.char '"' *> jString
+ where
+  jString = do
+    optFirst <- optional char
+    case optFirst of
+      Nothing                              -> "" <$ P.char '"'
+      Just first | not (isSurrogate first) -> (first :) <$> jString
+      Just first                           -> do
+        second <- char
+        if isHighSurrogate first && isLowSurrogate second
+          then (combineSurrogates first second :) <$> jString
+          else empty
 
--- | Parser for characters as unicode in input
-escapeUnicode :: Parser Char
-escapeUnicode =
-  chr . fst . head . readHex <$> replicateM 4 (P.satisfy isHexDigit)
+  isHighSurrogate = inRange (0xD800, 0xDBFF) . ord
+  isLowSurrogate  = inRange (0xDC00, 0xDFFF) . ord
+  isSurrogate     = liftA2 (||) isHighSurrogate isLowSurrogate
 
--- | Parser for characters that are scaped in the input
-escapeChar :: Parser Char
-escapeChar =
-  ('"' ¤ "\\\"")
-    <|> ('\\' ¤ "\\\\")
-    <|> ('/' ¤ "\\/")
-    <|> ('\b' ¤ "\\b")
-    <|> ('\f' ¤ "\\f")
-    <|> ('\n' ¤ "\\n")
-    <|> ('\r' ¤ "\\r")
-    <|> ('\t' ¤ "\\t")
-    <|> (P.string "\\u" *> escapeUnicode)
+  combineSurrogates a b =
+    chr $ ((ord a - 0xD800) `shiftL` 10) + (ord b - 0xDC00) + 0x10000
 
--- | Parser of a character that is not " or \\
-normalChar :: Parser Char
-normalChar = P.satisfy (\c -> c /= '"' && c /= '\\')
-
--- | Parser of a string that is between double quotes (not considering any double quots that are scaped)
-stringLiteral :: Parser String
-stringLiteral = P.char '"' *> P.many (normalChar <|> escapeChar) <* P.char '"'
-
--- | Parser of literal json string values
-jsonString :: Parser JsonValue
-jsonString = JsonString <$> stringLiteral
-
+  char =
+    ('"' ¤ "\\\"")
+      <|> ('\\' ¤ "\\\\")
+      <|> ('/' ¤ "\\/")
+      <|> ('\b' ¤ "\\b")
+      <|> ('\f' ¤ "\\f")
+      <|> ('\n' ¤ "\\n")
+      <|> ('\r' ¤ "\\r")
+      <|> ('\t' ¤ "\\t")
+      <|> (P.string "\\u" *> escapeUnicode)
+      <|> P.satisfy (\c -> not (c == '\"' || c == '\\' || isControl c))
+   where
+    isControl c = c <= '\31'
+    escapeUnicode =
+      chr . fst . head . readHex <$> replicateM 4 (P.satisfy isHexDigit)
 
 parseDeliveryDay :: Parser DeliveryDay
 parseDeliveryDay =
   DeliveryDay <$>- parseWeekDay <*>- (read <$> digits) <*>- parseMonth
 
-digits :: P.ReadP String
+digits :: Parser String
 digits = P.munch1 isDigit
 
 (<$>-) :: (a -> b) -> Parser a -> Parser b
@@ -251,29 +214,16 @@ parseMonth =
 (¤) :: a -> String -> Parser a
 c ¤ s = c <$ P.string s
 
-parse :: P.ReadP a -> String -> Maybe a
+parse :: Parser a -> String -> Maybe a
 parse parser str = case P.readP_to_S parser str of
   []             -> Nothing
   ((res, _) : _) -> Just res
-
-(<$?>) :: (a -> Maybe b) -> [a] -> [b]
-(<$?>) = mapMaybe
-
-infixl 4 <$?>
-
-extractJsonStrings :: JsonValue -> [String]
-extractJsonStrings (JsonArray xs) = getJsonString <$?> xs
-extractJsonStrings _              = []
-
-getJsonString :: Alternative f => JsonValue -> f String
-getJsonString (JsonString x) = pure x
-getJsonString _              = empty
 
 main :: IO ()
 main = do
   now   <- getCurrentTime
   str   <- fetchData
-  entry <- case parse (jsonValue <* P.eof) str >>= parseEntry of
+  entry <- case parse entryP str of
     Just value -> pure value
     _          -> error $ "Invalid data: " <> str
   argv <- getArgs
