@@ -1,4 +1,5 @@
 GHC ?= ghc
+INSTALL_BIN ?= ~/.local/bin
 
 exe = postgang
 
@@ -16,3 +17,8 @@ format:
 .PHONY: clean
 clean:
 	$(RM) $(exe)
+
+.PHONY: install
+install: $(exe)
+	mkdir -p $(INSTALL_BIN)
+	install -m 0755 -t $(INSTALL_BIN) $(exe)
