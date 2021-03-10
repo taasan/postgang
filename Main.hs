@@ -60,7 +60,7 @@ import System.Process
   )
 
 import Data.Bits
-  ( Bits (shiftL)
+  ( shiftL
   )
 import Data.Functor
   ( void
@@ -68,7 +68,17 @@ import Data.Functor
 import Data.Ix
   ( inRange
   )
-import qualified Text.ParserCombinators.ReadP as P
+import Text.ParserCombinators.ReadP
+  ( ReadP
+  , char
+  , get
+  , munch1
+  , readP_to_S
+  , satisfy
+  , sepBy
+  , skipSpaces
+  , string
+  )
 import Text.Printf
   ( printf
   )
@@ -109,42 +119,45 @@ data DeliveryDay =
     }
   deriving (Show)
 
-data JsonValue
-  = JsonNull
-  | JsonBool Bool
-  | JsonNumber Double
-  | JsonString String
-  | JsonArray [JsonValue]
-  | JsonObject [(String, JsonValue)]
-  deriving (Show, Eq)
-
-entryP :: Parser Entry
-entryP = do
-  void . skipUntil $ P.string "\"nextDeliveryDays\"" <* ws <* P.char ':' <* ws
-  Entry <$> (P.char '[' *> ws *> elements <* ws <* P.char ']')
- where
-  elements :: Parser [String]
-  elements = P.sepBy jsonStringP (ws *> P.char ',' <* ws)
-
 -- Generic show
 show :: (Show a, IsString b) => a -> b
 show = fromString . Show.show
 
-type Parser = P.ReadP
+type Parser = ReadP
 
-ws :: P.ReadP ()
-ws = P.skipSpaces
+(¤) :: a -> String -> Parser a
+c ¤ s = c <$ string s
+
+(<$>-) :: (a -> b) -> Parser a -> Parser b
+f <$>- p = f <$> skipUntil p
+
+(<*>-) :: Parser (a -> b) -> Parser a -> Parser b
+f <*>- p = f <*> skipUntil p
+
+skipUntil :: Parser a -> Parser a
+skipUntil p = p <|> (get *> skipUntil p)
+
+entryP :: Parser Entry
+entryP = do
+  void
+    .  skipUntil
+    $  string "\"nextDeliveryDays\""
+    <* skipSpaces
+    <* char ':'
+    <* skipSpaces
+  Entry <$> (char '[' *> skipSpaces *> elements <* skipSpaces <* char ']')
+  where elements = sepBy jsonStringP (skipSpaces *> char ',' <* skipSpaces)
 
 jsonStringP :: Parser String
-jsonStringP = P.char '"' *> jString
+jsonStringP = char '"' *> jString
  where
   jString = do
-    optFirst <- optional char
+    optFirst <- optional jsonChar
     case optFirst of
-      Nothing                              -> "" <$ P.char '"'
+      Nothing                              -> "" <$ char '"'
       Just first | not (isSurrogate first) -> (first :) <$> jString
       Just first                           -> do
-        second <- char
+        second <- jsonChar
         if isHighSurrogate first && isLowSurrogate second
           then (combineSurrogates first second :) <$> jString
           else empty
@@ -156,7 +169,7 @@ jsonStringP = P.char '"' *> jString
   combineSurrogates a b =
     chr $ ((ord a - 0xD800) `shiftL` 10) + (ord b - 0xDC00) + 0x10000
 
-  char =
+  jsonChar =
     ('"' ¤ "\\\"")
       <|> ('\\' ¤ "\\\\")
       <|> ('/' ¤ "\\/")
@@ -165,39 +178,29 @@ jsonStringP = P.char '"' *> jString
       <|> ('\n' ¤ "\\n")
       <|> ('\r' ¤ "\\r")
       <|> ('\t' ¤ "\\t")
-      <|> (P.string "\\u" *> escapeUnicode)
-      <|> P.satisfy (\c -> not (c == '\"' || c == '\\' || isControl c))
+      <|> (string "\\u" *> escapeUnicode)
+      <|> satisfy (\c -> not (c == '\"' || c == '\\' || isControl c))
    where
     isControl c = c <= '\31'
     escapeUnicode =
-      chr . fst . head . readHex <$> replicateM 4 (P.satisfy isHexDigit)
+      chr . fst . head . readHex <$> replicateM 4 (satisfy isHexDigit)
 
-parseDeliveryDay :: Parser DeliveryDay
-parseDeliveryDay =
-  DeliveryDay <$>- parseWeekDay <*>- (read <$> digits) <*>- parseMonth
+deliveryDayP :: Parser DeliveryDay
+deliveryDayP = DeliveryDay <$>- weekDayP <*>- (read <$> digitsP) <*>- monthP
 
-digits :: Parser String
-digits = P.munch1 isDigit
+digitsP :: Parser String
+digitsP = munch1 isDigit
 
-(<$>-) :: (a -> b) -> Parser a -> Parser b
-f <$>- p = f <$> skipUntil p
-
-(<*>-) :: Parser (a -> b) -> Parser a -> Parser b
-f <*>- p = f <*> skipUntil p
-
-skipUntil :: Parser a -> Parser a
-skipUntil p = p <|> (P.get *> skipUntil p)
-
-parseWeekDay :: Parser DayOfWeek
-parseWeekDay = do
+weekDayP :: Parser DayOfWeek
+weekDayP = do
   (Monday ¤ "mandag")
     <|> (Tuesday ¤ "tirsdag")
     <|> (Wednesday ¤ "onsdag")
     <|> (Thursday ¤ "torsdag")
     <|> (Friday ¤ "fredag")
 
-parseMonth :: Parser Month
-parseMonth =
+monthP :: Parser Month
+monthP =
   (January ¤ "januar")
     <|> (February ¤ "februar")
     <|> (March ¤ "mars")
@@ -211,11 +214,8 @@ parseMonth =
     <|> (November ¤ "november")
     <|> (December ¤ "desember")
 
-(¤) :: a -> String -> Parser a
-c ¤ s = c <$ P.string s
-
-parse :: Parser a -> String -> Maybe a
-parse parser str = case P.readP_to_S parser str of
+runParser :: Parser a -> String -> Maybe a
+runParser parser str = case readP_to_S parser str of
   []             -> Nothing
   ((res, _) : _) -> Just res
 
@@ -223,7 +223,7 @@ main :: IO ()
 main = do
   now   <- getCurrentTime
   str   <- fetchData
-  entry <- case parse entryP str of
+  entry <- case runParser entryP str of
     Just value -> pure value
     _          -> error $ "Invalid data: " <> str
   argv <- getArgs
@@ -241,7 +241,7 @@ main = do
   ical :: UTCTime -> Entry -> [Maybe String]
   ical now (Entry days) =
     (Just <$> preamble)
-      <> (days >>= event now . parse parseDeliveryDay)
+      <> (days >>= event now . runParser deliveryDayP)
       <> (Just <$> ["END:VCALENDAR", ""])
   event :: UTCTime -> Maybe DeliveryDay -> [Maybe String]
   event now (Just dd@(DeliveryDay dayName d m)) =
