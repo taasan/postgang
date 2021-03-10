@@ -1,7 +1,9 @@
+GHC ?= ghc
+
 exe = postgang
 
 $(exe): Main.hs
-	ghc -O2 $< -o $@
+	$(GHC) -O2 $< -o $@
 	strip $@
 	if command -v upx >/dev/null 2>&1; then upx --brute $@; fi
 
