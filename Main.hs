@@ -273,6 +273,8 @@ main = do
     (proc
       "curl"
       [ "-sSL"
+      , "--retry"
+      , "5"
       , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode=7530"
       , "-H"
       , "x-requested-with: XMLHttpRequest"
