@@ -1,5 +1,5 @@
 -- https://cabal.readthedocs.io/en/latest/cabal-project.html
 -- Local adaptations in cabal.project.local
 
-packages: posten-haskell.cabal
+packages: postgang.cabal
 -- executable-dynamic: True

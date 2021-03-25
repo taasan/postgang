@@ -1,15 +1,15 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Main
   ( main
   )
 where
 
-import Prelude hiding
-  ( show
-  )
+import Prelude
 
 import Control.Applicative
   ( Alternative (..)
@@ -37,9 +37,6 @@ import Data.Maybe
   , fromJust
   , isNothing
   )
-import Data.String
-  ( IsString (..)
-  )
 import Data.Time
   ( UTCTime (utctDay)
   , defaultTimeLocale
@@ -47,10 +44,16 @@ import Data.Time
   , getCurrentTime
   , toGregorian
   )
+import Data.Version
+  ( showVersion
+  )
+
 
 import Numeric
   ( readHex
   )
+
+import GitHash
 
 import System.Console.GetOpt
   ( ArgDescr (..)
@@ -75,6 +78,9 @@ import System.Process
 import Data.Bits
   ( shiftL
   )
+import Data.Foldable
+  ( traverse_
+  )
 import Data.Function
   ( (&)
   )
@@ -84,10 +90,12 @@ import Data.Functor
 import Data.Ix
   ( inRange
   )
+import Paths_postgang
 import System.Exit
   ( exitFailure
   , exitSuccess
   )
+import TH
 import Text.ParserCombinators.ReadP
   ( ReadP
   , char
@@ -105,10 +113,11 @@ import Text.Printf
   , hPrintf
   , printf
   )
-import qualified Text.Show as Show
+
+type StringT = String
 
 newtype Entry =
-  Entry [String]
+  Entry [StringT]
   deriving (Show)
 
 data DayOfWeek
@@ -117,14 +126,14 @@ data DayOfWeek
   | Wednesday
   | Thursday
   | Friday
-  deriving (Show, Eq, Enum)
+  deriving (Eq, Enum)
 
-showDayName :: IsString p => DayOfWeek -> p
-showDayName Monday    = "mandag"
-showDayName Tuesday   = "tirsdag"
-showDayName Wednesday = "onsdag"
-showDayName Thursday  = "torsdag"
-showDayName Friday    = "fredag"
+instance Show DayOfWeek where
+  show Monday    = "mandag"
+  show Tuesday   = "tirsdag"
+  show Wednesday = "onsdag"
+  show Thursday  = "torsdag"
+  show Friday    = "fredag"
 
 data Month
   = January
@@ -149,13 +158,9 @@ data DeliveryDay =
     }
   deriving (Show)
 
--- Generic show
-show :: (Show a, IsString b) => a -> b
-show = fromString . Show.show
-
 type Parser = ReadP
 
-(¤) :: a -> String -> Parser a
+(¤) :: a -> StringT -> Parser a
 c ¤ s = c <$ string s
 
 (<$>-) :: (a -> b) -> Parser a -> Parser b
@@ -177,7 +182,7 @@ entryP = do
   Entry <$> (char '[' *> skipSpaces *> elements <* skipSpaces <* char ']')
   where elements = sepBy jsonStringP (skipSpaces *> char ',' <* skipSpaces)
 
-jsonStringP :: Parser String
+jsonStringP :: Parser StringT
 jsonStringP = char '"' *> jString
  where
   jString = do
@@ -216,11 +221,11 @@ jsonStringP = char '"' *> jString
 deliveryDayP :: Parser DeliveryDay
 deliveryDayP = DeliveryDay <$>- weekDayP <*>- (read <$> digitsP) <*>- monthP
 
-digitsP :: Parser String
+digitsP :: Parser StringT
 digitsP = munch1 isDigit
 
 weekDayP :: ReadP DayOfWeek
-weekDayP = choice $ ap (¤) showDayName <$> [Monday .. Friday]
+weekDayP = choice $ ap (¤) show <$> [Monday .. Friday]
 
 monthP :: Parser Month
 monthP =
@@ -237,7 +242,7 @@ monthP =
     <|> (November ¤ "november")
     <|> (December ¤ "desember")
 
-runParser :: Parser a -> String -> Maybe a
+runParser :: Parser a -> StringT -> Maybe a
 runParser parser str = case readP_to_S parser str of
   []             -> Nothing
   ((res, _) : _) -> Just res
@@ -252,11 +257,15 @@ data Options = Options
     { optOutput :: Maybe FilePath
     , optReadStdin :: Bool
     , optShowHelp :: Bool
+    , optShowVersion :: Bool
     } deriving Show
 
 defaultOptions :: Options
-defaultOptions =
-  Options { optOutput = Nothing, optReadStdin = False, optShowHelp = False }
+defaultOptions = Options { optOutput      = Nothing
+                         , optReadStdin   = False
+                         , optShowHelp    = False
+                         , optShowVersion = False
+                         }
 
 options :: [OptDescr (Options -> Options)]
 options =
@@ -272,16 +281,20 @@ options =
            ["help"]
            (NoArg (\opts -> opts { optShowHelp = True }))
            "Show this help message"
+  , Option ['V']
+           ["version"]
+           (NoArg (\opts -> opts { optShowVersion = True }))
+           "Show version information"
   ]
 
 main :: IO ()
 main = do
   prog <- getProgName
-  (Options outFile readFromStdin showHelp, rest) <- opts
+  (Options outFile readFromStdin showHelp showVersionO, rest) <- opts
   when
     (rest /= [])
     do
-      hPrintf stderr "Superfluous arguments: %s" (show rest :: String)
+      hPrintf stderr "Superfluous arguments: %s" (show rest :: StringT)
       hPutStrLn stderr ""
       hPutStrLn stderr $ showUsage prog
       exitFailure
@@ -290,6 +303,14 @@ main = do
     showHelp
     do
       showUsage prog
+      exitSuccess
+
+  when
+    showVersionO
+    do
+      printf' "Build date" $$tNow
+      putStrLn ""
+      traverse_ putStrLn gitVersionInfo
       exitSuccess
 
   inData      <- if readFromStdin then getContents else fetchData
@@ -307,33 +328,31 @@ main = do
     then putStr icalOutput
     else writeFile (fromJust outFile) icalOutput
  where
-  showUsage :: PrintfType r => String -> r
+  showUsage :: PrintfType r => StringT -> r
   showUsage = printf "Usage: %s" . flip usageInfo options
 
-  ical :: UTCTime -> Entry -> [Maybe String]
+  ical :: UTCTime -> Entry -> [Maybe StringT]
   ical now (Entry days) =
     (Just <$> preamble)
       <> (days >>= event now . runParser deliveryDayP)
       <> (Just <$> ["END:VCALENDAR", ""])
 
-  event :: UTCTime -> Maybe DeliveryDay -> [Maybe String]
+  event :: UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
   event now (Just dd@(DeliveryDay dayName d m)) =
-    let
-      year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
-      (thisYear, thisMonth, _) = (toGregorian . utctDay) now
-    in
-      Just
-        <$> [ "BEGIN:VEVENT"
-            , "UID:" <> show dd
-            , "SUMMARY:Posten kommer " <> showDayName dayName
-            , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
-            , "DURATION:P1D"
-            , "DTSTAMP:" <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
-            , "END:VEVENT"
-            ]
+    let year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
+        (thisYear, thisMonth, _) = (toGregorian . utctDay) now
+    in  Just
+          <$> [ "BEGIN:VEVENT"
+              , "UID:" <> show dd
+              , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
+              , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
+              , "DURATION:P1D"
+              , "DTSTAMP:" <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
+              , "END:VEVENT"
+              ]
   event _ _ = []
 
-  preamble :: [String]
+  preamble :: [StringT]
   preamble =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
@@ -342,7 +361,7 @@ main = do
     , "METHOD:PUBLISH"
     ]
 
-  fetchData :: IO String
+  fetchData :: IO StringT
   fetchData = readCreateProcess
     (proc
       "curl"
@@ -364,3 +383,31 @@ main = do
       (o, n, []) -> return (foldl (&) defaultOptions o, n)
       (_, _, errs) ->
         ioError (userError (join errs <> usageInfo header options))
+
+  gitVersionInfo
+    | giDirty gi
+    = [ printf' "Branch"
+          $  giBranch gi
+          <> "@"
+          <> giTag gi
+          <> " (uncommitted files present)"
+      ]
+    | otherwise
+    = [ printf' "Version" $ showVersion version
+      , ""
+      , printf' "Tag" $ giTag gi
+      , printf' "Branch" $ giBranch gi
+      , printf' "Date" $ giCommitDate gi
+      , printf' "Message" $ giCommitMessage gi
+      ]
+
+  printf' :: PrintfType r => StringT -> r
+  printf' = printf "%-12s: %s"
+
+  commit :: StringT
+  commit = printf "%s@%s" (giBranch gi) (giHash gi)
+
+  dirty | giDirty gi = " (uncommitted files present)"
+        | otherwise  = ""
+
+  gi = $$tGitInfoCwd
