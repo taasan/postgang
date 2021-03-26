@@ -15,6 +15,7 @@ import Prelude
 import Control.Applicative
   ( Alternative (..)
   , liftA2
+  , liftA3
   , optional
   )
 import Control.Monad
@@ -89,6 +90,9 @@ import Data.Functor
   )
 import Data.Ix
   ( inRange
+  )
+import Network.HostName
+  ( getHostName
   )
 import Paths_postgang
 import System.Exit
@@ -323,8 +327,10 @@ main = do
       hPutStrLn stderr errResponse
       exitWith e
     _ -> pure ()
-
-  outputLines <- liftA2 ical getCurrentTime (f (runParser entryP) response)
+  outputLines <- liftA3 ical
+                        getHostName
+                        getCurrentTime
+                        (f (runParser entryP) response)
 
   when (any isNothing outputLines)
     $  error
@@ -341,19 +347,19 @@ main = do
   showUsage :: PrintfType r => StringT -> r
   showUsage = printf "Usage: %s" . flip usageInfo options
 
-  ical :: UTCTime -> Entry -> [Maybe StringT]
-  ical now (Entry days) =
+  ical :: StringT -> UTCTime -> Entry -> [Maybe StringT]
+  ical hostname now (Entry days) =
     (Just <$> preamble)
-      <> (days >>= event now . runParser deliveryDayP)
+      <> (days >>= event hostname now . runParser deliveryDayP)
       <> (Just <$> ["END:VCALENDAR", ""])
 
-  event :: UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
-  event now (Just dd@(DeliveryDay dayName d m)) =
+  event :: StringT -> UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
+  event hostname now (Just dd@(DeliveryDay dayName d m)) =
     let year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
         (thisYear, thisMonth, _) = (toGregorian . utctDay) now
     in  Just
           <$> [ "BEGIN:VEVENT"
-              , "UID:" <> (escapeIcalString . show) dd
+              , "UID:" <> escapeIcalString (show dd <> "@" <> hostname)
               , "ORGANIZER:Posten"
               , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
               , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
@@ -362,7 +368,7 @@ main = do
                 <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%SZ" now
               , "END:VEVENT"
               ]
-  event _ _ = []
+  event _ _ _ = []
 
   preamble :: [StringT]
   preamble =

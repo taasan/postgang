@@ -4,7 +4,7 @@ cabal-version:       >=1.10
 -- http://haskell.org/cabal/users-guide/
 
 name:                postgang
-version:             0.1.0.4
+version:             0.1.0.5
 homepage:            https://github.com/taasan/postgang
 -- synopsis:
 -- description:
@@ -26,6 +26,7 @@ executable postgang
   -- other-extensions:
   build-depends:       base >=4 && <5
                      , githash
+                     , hostname
                      , process
                      , template-haskell
                      , time
