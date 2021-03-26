@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main
   ( main
@@ -371,7 +372,7 @@ main = do
     ]
 
   fetchData :: Bool -> IO (ExitCode, StringT, StringT)
-  fetchData True = getContents >>= \c -> pure (ExitSuccess, c, "")
+  fetchData True = (ExitSuccess, , "") <$> getContents
   fetchData _    = readProcessWithExitCode
     "curl"
     [ "-sSL"
