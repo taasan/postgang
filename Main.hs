@@ -71,8 +71,7 @@ import System.IO
   , stderr
   )
 import System.Process
-  ( proc
-  , readCreateProcess
+  ( readProcessWithExitCode
   )
 
 import Data.Bits
@@ -92,8 +91,10 @@ import Data.Ix
   )
 import Paths_postgang
 import System.Exit
-  ( exitFailure
+  ( ExitCode (..)
+  , exitFailure
   , exitSuccess
+  , exitWith
   )
 import TH
 import Text.ParserCombinators.ReadP
@@ -313,8 +314,16 @@ main = do
       traverse_ putStrLn gitVersionInfo
       exitSuccess
 
-  inData      <- if readFromStdin then getContents else fetchData
-  outputLines <- liftA2 ical getCurrentTime (f (runParser entryP) inData)
+  (exitCode, response, errResponse) <- fetchData readFromStdin
+  case exitCode of
+    e@(ExitFailure _) -> do
+      hPutStrLn stderr $ printf' "ERROR" "Failed to fetch data"
+      traverse_ (hPutStrLn stderr) gitVersionInfo
+      hPutStrLn stderr errResponse
+      exitWith e
+    _ -> pure ()
+
+  outputLines <- liftA2 ical getCurrentTime (f (runParser entryP) response)
 
   when (any isNothing outputLines)
     $  error
@@ -356,23 +365,22 @@ main = do
   preamble =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
-    , "PRODID:-//Aasan//Aasan Postgang 1.0//EN"
+    , printf "PRODID:-//Aasan//Aasan Postgang %s//EN" $ giTag gi
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
 
-  fetchData :: IO StringT
-  fetchData = readCreateProcess
-    (proc
-      "curl"
-      [ "-sSL"
-      , "--retry"
-      , "5"
-      , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode=7530"
-      , "-H"
-      , "x-requested-with: XMLHttpRequest"
-      ]
-    )
+  fetchData :: Bool -> IO (ExitCode, StringT, StringT)
+  fetchData True = getContents >>= \c -> pure (ExitSuccess, c, "")
+  fetchData _    = readProcessWithExitCode
+    "curl"
+    [ "-sSL"
+    , "--retry"
+    , "5"
+    , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode=7530"
+    , "-H"
+    , "x-requested-with: XMLHttpRequest"
+    ]
     ""
 
   opts = do
@@ -389,7 +397,7 @@ main = do
     = [ printf' "Branch"
           $  giBranch gi
           <> "@"
-          <> giTag gi
+          <> giHash gi
           <> " (uncommitted files present)"
       ]
     | otherwise
