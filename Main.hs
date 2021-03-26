@@ -353,11 +353,13 @@ main = do
         (thisYear, thisMonth, _) = (toGregorian . utctDay) now
     in  Just
           <$> [ "BEGIN:VEVENT"
-              , "UID:" <> show dd
+              , "UID:" <> (escapeIcalString . show) dd
+              , "ORGANIZER:Posten"
               , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
               , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
               , "DURATION:P1D"
-              , "DTSTAMP:" <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%S" now
+              , "DTSTAMP:"
+                <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%SZ" now
               , "END:VEVENT"
               ]
   event _ _ = []
@@ -366,7 +368,8 @@ main = do
   preamble =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
-    , printf "PRODID:-//Aasan//Aasan Postgang %s//EN" $ giTag gi
+    , printf "PRODID:-//Aasan//Aasan Postgang %s//EN"
+      $ (escapeIcalString . giTag) gi
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
@@ -420,3 +423,11 @@ main = do
         | otherwise  = ""
 
   gi = $$tGitInfoCwd
+
+  escapeIcalString :: StringT -> StringT
+  escapeIcalString s = s >>= escapeIcalChar
+
+  escapeIcalChar :: Char -> StringT
+  escapeIcalChar c | c == '\\' || c == ';' || c == ',' = ['\\', c]
+  escapeIcalChar '\n' = "\\n"
+  escapeIcalChar c    = [c]
