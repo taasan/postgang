@@ -4,7 +4,7 @@ cabal-version:       >=1.10
 -- http://haskell.org/cabal/users-guide/
 
 name:                postgang
-version:             0.1.0.7
+version:             0.2.0.0
 homepage:            https://github.com/taasan/postgang
 -- synopsis:
 -- description:
@@ -21,8 +21,7 @@ extra-source-files:  CHANGELOG.md
 
 executable postgang
   main-is:             Main.hs
-  other-modules:       Paths_postgang
-                     , TH
+  other-modules:       TH
   -- other-extensions:
   build-depends:       base >=4 && <5
                      , githash
@@ -39,7 +38,7 @@ executable postgang
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
     -Wredundant-constraints
-    --Werror
+    -Werror
 
 source-repository    head
   type:              git

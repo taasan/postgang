@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -9,6 +10,10 @@ module Main
   ( main
   )
 where
+
+#ifndef CURRENT_PACKAGE_VERSION
+#define CURRENT_PACKAGE_VERSION "[unknown]"
+#endif
 
 import Prelude
 
@@ -43,10 +48,6 @@ import Data.Time
   , getCurrentTime
   , toGregorian
   )
-import Data.Version
-  ( showVersion
-  )
-
 
 import Numeric
   ( readHex
@@ -98,7 +99,6 @@ import Data.Ix
 import Network.HostName
   ( getHostName
   )
-import Paths_postgang
 import System.Exit
   ( ExitCode (..)
   , exitFailure
@@ -110,6 +110,7 @@ import Text.ParserCombinators.ReadP
   ( ReadP
   , char
   , choice
+  , eof
   , get
   , munch1
   , readP_to_S
@@ -170,14 +171,23 @@ data DeliveryDay =
 
 type Parser = ReadP
 
+newtype PostalCode
+  = PostalCode Int
+
+instance Show PostalCode where
+  show (PostalCode p) = printf "%04d" p
+
+postalCodeP :: Parser PostalCode
+postalCodeP = PostalCode . read <$> replicateM 4 (satisfy isDigit)
+
 (¤) :: a -> StringT -> Parser a
 c ¤ s = c <$ string s
 
 (<$>-) :: (a -> b) -> Parser a -> Parser b
-f <$>- p = f <$> skipUntil p
+g <$>- p = g <$> skipUntil p
 
 (<*>-) :: Parser (a -> b) -> Parser a -> Parser b
-f <*>- p = f <*> skipUntil p
+g <*>- p = g <*> skipUntil p
 
 skipUntil :: Parser a -> Parser a
 skipUntil p = p <|> (get *> skipUntil p)
@@ -265,14 +275,14 @@ f g x = case g x of
 -- Options
 data Options = Options
     { optOutput :: Maybe FilePath
-    , optReadStdin :: Bool
+    , optPostalCode :: Maybe PostalCode
     , optShowHelp :: Bool
     , optShowVersion :: Bool
     } deriving Show
 
 defaultOptions :: Options
 defaultOptions = Options { optOutput      = Nothing
-                         , optReadStdin   = False
+                         , optPostalCode  = Nothing
                          , optShowHelp    = False
                          , optShowVersion = False
                          }
@@ -283,10 +293,11 @@ options =
            ["output"]
            (ReqArg (\val opts -> opts { optOutput = Just val }) "FILE")
            "Path of output file"
-  , Option ['s']
-           ["stdin"]
-           (NoArg (\opts -> opts { optReadStdin = True }))
-           "Read input from stdin instead of fetching from posten.no"
+  , Option
+    ['c']
+    ["code"]
+    (ReqArg (\val opts -> opts { optPostalCode = code val }) "CODE")
+    "Postal code. If not specified, read input from stdin instead of fetching from posten.no"
   , Option ['h']
            ["help"]
            (NoArg (\opts -> opts { optShowHelp = True }))
@@ -296,13 +307,17 @@ options =
            (NoArg (\opts -> opts { optShowVersion = True }))
            "Show version information"
   ]
+ where
+  code val = case runParser (postalCodeP <* eof) val of
+    Nothing -> error $ "Invalid code: " <> show val
+    x       -> x
 
 main :: IO ()
 main = do
   traverse_ (`hSetEncoding` utf8) [stdout, stderr, stdin]
   hSetNewlineMode stdout (NewlineMode CRLF CRLF)
   prog <- getProgName
-  (Options outFile readFromStdin showHelp showVersionO, rest) <- opts
+  (Options outFile postalCode showHelp showVersionO, rest) <- opts
   when
     (rest /= [])
     do
@@ -325,7 +340,7 @@ main = do
       traverse_ putStrLn gitVersionInfo
       exitSuccess
 
-  (exitCode, response, errResponse) <- fetchData readFromStdin
+  (exitCode, response, errResponse) <- fetchData postalCode
   case exitCode of
     e@(ExitFailure _) -> do
       hPutStrLn stderr $ printf' "ERROR" "Failed to fetch data"
@@ -386,14 +401,15 @@ main = do
     , "METHOD:PUBLISH"
     ]
 
-  fetchData :: Bool -> IO (ExitCode, StringT, StringT)
-  fetchData True = (ExitSuccess, , "") <$> getContents
-  fetchData _    = readProcessWithExitCode
+  fetchData :: Maybe PostalCode -> IO (ExitCode, StringT, StringT)
+  fetchData Nothing     = (ExitSuccess, , "") <$> getContents
+  fetchData (Just code) = readProcessWithExitCode
     "curl"
     [ "-sSL"
     , "--retry"
     , "5"
-    , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode=7530"
+    , "https://www.posten.no/levering-av-post-2020/_/component/main/1/leftRegion/1?postCode="
+      <> show code
     , "-H"
     , "x-requested-with: XMLHttpRequest"
     ]
@@ -417,7 +433,7 @@ main = do
           <> " (uncommitted files present)"
       ]
     | otherwise
-    = [ printf' "Version" $ showVersion version
+    = [ printf' "Version" version
       , ""
       , printf' "Tag" $ giTag gi
       , printf' "Branch" $ giBranch gi
@@ -440,3 +456,6 @@ main = do
   escapeIcalChar c | c == '\\' || c == ';' || c == ',' = ['\\', c]
   escapeIcalChar '\n' = "\\n"
   escapeIcalChar c    = [c]
+
+  version :: StringT
+  version = CURRENT_PACKAGE_VERSION
