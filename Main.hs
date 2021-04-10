@@ -31,9 +31,6 @@ import Data.Char
   , isHexDigit
   , ord
   )
-import Data.List
-  ( intercalate
-  )
 import Data.Maybe
   ( catMaybes
   , fromJust
@@ -69,8 +66,11 @@ import System.Environment
   , getProgName
   )
 import System.IO
-  ( hPutStrLn
+  ( Newline (CRLF)
+  , NewlineMode (..)
+  , hPutStrLn
   , hSetEncoding
+  , hSetNewlineMode
   , stderr
   , stdin
   , stdout
@@ -300,6 +300,7 @@ options =
 main :: IO ()
 main = do
   traverse_ (`hSetEncoding` utf8) [stdout, stderr, stdin]
+  hSetNewlineMode stdout (NewlineMode CRLF CRLF)
   prog <- getProgName
   (Options outFile readFromStdin showHelp showVersionO, rest) <- opts
   when
@@ -343,7 +344,7 @@ main = do
     <> "\n"
     <> show outputLines
 
-  let icalOutput = intercalate "\r\n" $ catMaybes outputLines
+  let icalOutput = unlines $ catMaybes outputLines
 
   if isNothing outFile || outFile == Just "-"
     then putStr icalOutput
