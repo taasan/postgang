@@ -70,7 +70,11 @@ import System.Environment
   )
 import System.IO
   ( hPutStrLn
+  , hSetEncoding
   , stderr
+  , stdin
+  , stdout
+  , utf8
   )
 import System.Process
   ( readProcessWithExitCode
@@ -295,6 +299,7 @@ options =
 
 main :: IO ()
 main = do
+  traverse_ (`hSetEncoding` utf8) [stdout, stderr, stdin]
   prog <- getProgName
   (Options outFile readFromStdin showHelp showVersionO, rest) <- opts
   when
