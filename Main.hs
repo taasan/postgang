@@ -430,9 +430,6 @@ main = do
   commit :: StringT
   commit = printf "%s@%s" (giBranch gi) (giHash gi)
 
-  dirty | giDirty gi = " (uncommitted files present)"
-        | otherwise  = ""
-
   gi = $$tGitInfoCwd
 
   escapeIcalString :: StringT -> StringT
