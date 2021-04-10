@@ -431,7 +431,7 @@ main = do
   commit :: StringT
   commit = printf "%s@%s" (giBranch gi) (giHash gi)
 
-  gi = $$tGitInfoCwd
+  gi     = $$tGitInfoCwd
 
   escapeIcalString :: StringT -> StringT
   escapeIcalString s = s >>= escapeIcalChar
