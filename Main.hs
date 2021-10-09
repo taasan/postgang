@@ -341,13 +341,15 @@ main = do
       exitSuccess
 
   (exitCode, response, errResponse) <- fetchData postalCode
-  case exitCode of
-    e@(ExitFailure _) -> do
-      hPutStrLn stderr $ printf' "ERROR" "Failed to fetch data"
-      traverse_ (hPutStrLn stderr) gitVersionInfo
-      hPutStrLn stderr errResponse
-      exitWith e
-    _ -> pure ()
+  if exitCode /= ExitSuccess
+    then do
+      exitWithError exitCode "Failed to fetch data" errResponse
+  else if response == ""
+    then do
+      exitWithError (ExitFailure 1) "Got empty data" errResponse
+  else do
+    pure ()
+
   outputLines <- liftA3 ical
                         getHostName
                         getCurrentTime
@@ -365,6 +367,13 @@ main = do
     then putStr icalOutput
     else writeFile (fromJust outFile) icalOutput
  where
+  exitWithError :: ExitCode -> String -> String -> IO ()
+  exitWithError exitCode reason errResponse = do
+    hPutStrLn stderr $ printf' "ERROR" reason
+    traverse_ (hPutStrLn stderr) gitVersionInfo
+    hPutStrLn stderr errResponse
+    exitWith exitCode
+
   showUsage :: PrintfType r => StringT -> r
   showUsage = printf "Usage: %s" . flip usageInfo options
 
