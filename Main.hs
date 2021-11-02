@@ -45,6 +45,7 @@ import Data.Time
   ( UTCTime (utctDay)
   , defaultTimeLocale
   , formatTime
+  , fromGregorian
   , getCurrentTime
   , toGregorian
   )
@@ -387,15 +388,17 @@ main = do
   event hostname now (Just dd@(DeliveryDay dayName d m)) =
     let year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
         (thisYear, thisMonth, _) = (toGregorian . utctDay) now
+        dtstart = fromGregorian year (fromEnum m + 1) d
+        dtend = succ dtstart
+        icalDate field = formatTime defaultTimeLocale $ field <> ";VALUE=DATE:%C%y%m%d"
     in  Just
           <$> [ "BEGIN:VEVENT"
               , "UID:" <> escapeIcalString (show dd <> "@" <> hostname)
               , "ORGANIZER:Posten"
               , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
-              , printf "DTSTART:%d%02d%02d" year (fromEnum m + 1) d
-              , "DURATION:P1D"
-              , "DTSTAMP:"
-                <> formatTime defaultTimeLocale "%C%y%m%dT%H%M%SZ" now
+              , icalDate "DTSTART" dtstart
+              , icalDate "DTEND" dtend
+              , formatTime defaultTimeLocale "DTSTAMP:%C%y%m%dT%H%M%SZ" now
               , "END:VEVENT"
               ]
   event _ _ _ = []
