@@ -399,6 +399,7 @@ main = do
               , icalDate "DTSTART" dtstart
               , icalDate "DTEND" dtend
               , formatTime defaultTimeLocale "DTSTAMP:%C%y%m%dT%H%M%SZ" now
+              , "TRANSP:TRANSPARENT"
               , "END:VEVENT"
               ]
   event _ _ _ = []
