@@ -68,11 +68,15 @@ import System.Environment
   , getProgName
   )
 import System.IO
-  ( Newline (CRLF)
+  ( IOMode (..)
+  , Newline (CRLF)
   , NewlineMode (..)
+  , hClose
+  , hPutStr
   , hPutStrLn
   , hSetEncoding
   , hSetNewlineMode
+  , openFile
   , stderr
   , stdin
   , stdout
@@ -316,7 +320,6 @@ options =
 main :: IO ()
 main = do
   traverse_ (`hSetEncoding` utf8) [stdout, stderr, stdin]
-  hSetNewlineMode stdout (NewlineMode CRLF CRLF)
   prog <- getProgName
   (Options outFile postalCode showHelp showVersionO, rest) <- opts
   when
@@ -351,7 +354,7 @@ main = do
   else do
     pure ()
 
-  outputLines <- liftA3 ical
+  outputLines <- liftA3 (ical postalCode)
                         getHostName
                         getCurrentTime
                         (f (runParser entryP) response)
@@ -363,10 +366,12 @@ main = do
     <> show outputLines
 
   let icalOutput = unlines $ catMaybes outputLines
-
-  if isNothing outFile || outFile == Just "-"
-    then putStr icalOutput
-    else writeFile (fromJust outFile) icalOutput
+  handle <- if isNothing outFile || outFile == Just "-"
+              then pure stdout
+              else openFile (fromJust outFile) WriteMode
+  hSetNewlineMode handle (NewlineMode CRLF CRLF)
+  hPutStr handle icalOutput
+  hClose handle
  where
   exitWithError :: ExitCode -> String -> String -> IO ()
   exitWithError exitCode reason errResponse = do
@@ -378,11 +383,11 @@ main = do
   showUsage :: PrintfType r => StringT -> r
   showUsage = printf "Usage: %s" . flip usageInfo options
 
-  ical :: StringT -> UTCTime -> Entry -> [Maybe StringT]
-  ical hostname now (Entry days) =
-    (Just <$> preamble)
+  ical :: Maybe PostalCode -> StringT -> UTCTime -> Entry -> [Maybe StringT]
+  ical code hostname now (Entry days) =
+    (Just <$> preamble code)
       <> (days >>= event hostname now . runParser deliveryDayP)
-      <> (Just <$> ["END:VCALENDAR", ""])
+      <> (Just <$> ["END:VCALENDAR"])
 
   event :: StringT -> UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
   event hostname now (Just dd@(DeliveryDay dayName d m)) =
@@ -394,7 +399,7 @@ main = do
     in  Just
           <$> [ "BEGIN:VEVENT"
               , "UID:" <> escapeIcalString (show dd <> "@" <> hostname)
-              , "ORGANIZER:Posten"
+              , "URL:https://www.posten.no/levering-av-post/"
               , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
               , icalDate "DTSTART" dtstart
               , icalDate "DTEND" dtend
@@ -404,15 +409,23 @@ main = do
               ]
   event _ _ _ = []
 
-  preamble :: [StringT]
-  preamble =
+  preamble :: Maybe PostalCode -> [StringT]
+  preamble mCode =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
-    , printf "PRODID:-//Aasan//Aasan Postgang %s//EN"
+    , printf "PRODID:-//Aasan//Aasan Postgang %s%s//EN"
+      code
       $ (escapeIcalString . giTag) gi
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
+    where
+      code = case mCode of
+        Just c ->
+          show c <> "@"
+
+        _ ->
+          ""
 
   fetchData :: Maybe PostalCode -> IO (ExitCode, StringT, StringT)
   fetchData Nothing     = (ExitSuccess, , "") <$> getContents
