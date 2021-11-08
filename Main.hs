@@ -390,7 +390,7 @@ main = do
       <> (Just <$> ["END:VCALENDAR"])
 
   event :: StringT -> UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
-  event hostname now (Just dd@(DeliveryDay dayName d m)) =
+  event hostname now (Just (DeliveryDay dayName d m)) =
     let year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
         (thisYear, thisMonth, _) = (toGregorian . utctDay) now
         dtstart = fromGregorian year (fromEnum m + 1) d
@@ -398,7 +398,7 @@ main = do
         icalDate field = formatTime defaultTimeLocale $ field <> ";VALUE=DATE:%C%y%m%d"
     in  Just
           <$> [ "BEGIN:VEVENT"
-              , "UID:" <> escapeIcalString (show dd <> "@" <> hostname)
+              , printf "UID:postgang-%s@%s" (formatTime defaultTimeLocale "%C%y%m%d" dtstart) hostname
               , "URL:https://www.posten.no/levering-av-post/"
               , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
               , icalDate "DTSTART" dtstart
