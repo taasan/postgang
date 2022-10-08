@@ -386,28 +386,41 @@ main = do
   ical :: Maybe PostalCode -> StringT -> UTCTime -> Entry -> [Maybe StringT]
   ical code hostname now (Entry days) =
     (Just <$> preamble code)
-      <> (days >>= event hostname now . runParser deliveryDayP)
+      <> (days >>= event code hostname now . runParser deliveryDayP)
       <> (Just <$> ["END:VCALENDAR"])
 
-  event :: StringT -> UTCTime -> Maybe DeliveryDay -> [Maybe StringT]
-  event hostname now (Just (DeliveryDay dayName d m)) =
-    let year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
-        (thisYear, thisMonth, _) = (toGregorian . utctDay) now
-        dtstart = fromGregorian year (fromEnum m + 1) d
-        dtend = succ dtstart
-        icalDate field = formatTime defaultTimeLocale $ field <> ";VALUE=DATE:%C%y%m%d"
-    in  Just
-          <$> [ "BEGIN:VEVENT"
-              , printf "UID:postgang-%s@%s" (formatTime defaultTimeLocale "%C%y%m%d" dtstart) hostname
-              , "URL:https://www.posten.no/levering-av-post/"
-              , printf "SUMMARY:Posten kommer %s %d." (show dayName) d
-              , icalDate "DTSTART" dtstart
-              , icalDate "DTEND" dtend
-              , formatTime defaultTimeLocale "DTSTAMP:%C%y%m%dT%H%M%SZ" now
-              , "TRANSP:TRANSPARENT"
-              , "END:VEVENT"
-              ]
-  event _ _ _ = []
+  event
+    :: Maybe PostalCode
+    -> StringT
+    -> UTCTime
+    -> Maybe DeliveryDay
+    -> [Maybe StringT]
+  event code hostname now (Just (DeliveryDay dayName d m)) =
+    let
+      year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
+      (thisYear, thisMonth, _) = (toGregorian . utctDay) now
+      dtstart                  = fromGregorian year (fromEnum m + 1) d
+      dtend                    = succ dtstart
+      icalDate field =
+        formatTime defaultTimeLocale $ field <> ";VALUE=DATE:%C%y%m%d"
+      code' = case code of
+        Just x -> show x ++ ": "
+        _      -> ""
+    in
+      Just
+        <$> [ "BEGIN:VEVENT"
+            , printf "UID:postgang-%s@%s"
+                     (formatTime defaultTimeLocale "%C%y%m%d" dtstart)
+                     hostname
+            , "URL:https://www.posten.no/levering-av-post/"
+            , printf "SUMMARY:%sPosten kommer %s %d." code' (show dayName) d
+            , icalDate "DTSTART" dtstart
+            , icalDate "DTEND"   dtend
+            , formatTime defaultTimeLocale "DTSTAMP:%C%y%m%dT%H%M%SZ" now
+            , "TRANSP:TRANSPARENT"
+            , "END:VEVENT"
+            ]
+  event _ _ _ _ = []
 
   preamble :: Maybe PostalCode -> [StringT]
   preamble mCode =
