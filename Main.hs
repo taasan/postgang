@@ -348,11 +348,11 @@ main = do
   if exitCode /= ExitSuccess
     then do
       exitWithError exitCode "Failed to fetch data" errResponse
-  else if response == ""
-    then do
-      exitWithError (ExitFailure 1) "Got empty data" errResponse
-  else do
-    pure ()
+    else if response == ""
+      then do
+        exitWithError (ExitFailure 1) "Got empty data" errResponse
+      else do
+        pure ()
 
   outputLines <- liftA3 (ical postalCode)
                         getHostName
@@ -367,8 +367,8 @@ main = do
 
   let icalOutput = unlines $ catMaybes outputLines
   handle <- if isNothing outFile || outFile == Just "-"
-              then pure stdout
-              else openFile (fromJust outFile) WriteMode
+    then pure stdout
+    else openFile (fromJust outFile) WriteMode
   hSetNewlineMode handle (NewlineMode CRLF CRLF)
   hPutStr handle icalOutput
   hClose handle
@@ -426,19 +426,16 @@ main = do
   preamble mCode =
     [ "BEGIN:VCALENDAR"
     , "VERSION:2.0"
-    , printf "PRODID:-//Aasan//Aasan Postgang %s%s//EN"
-      code
+    , printf "PRODID:-//Aasan//Aasan Postgang %s%s//EN" code
       $ (escapeIcalString . giTag) gi
     , "CALSCALE:GREGORIAN"
     , "METHOD:PUBLISH"
     ]
-    where
-      code = case mCode of
-        Just c ->
-          show c <> "@"
+   where
+    code = case mCode of
+      Just c -> show c <> "@"
 
-        _ ->
-          ""
+      _      -> ""
 
   fetchData :: Maybe PostalCode -> IO (ExitCode, StringT, StringT)
   fetchData Nothing     = (ExitSuccess, , "") <$> getContents
