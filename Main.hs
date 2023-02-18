@@ -445,7 +445,7 @@ main = do
     , "--retry"
     , "5"
     , "--fail"
-    , "https://www.posten.no/levering-av-post/_/component/main/1/leftRegion/1?postCode="
+    , "https://www.posten.no/levering-av-post/_/component/main/1/leftRegion/9?postCode="
       <> show code
     , "-H"
     , "x-requested-with: XMLHttpRequest"
