@@ -24,8 +24,7 @@ import Control.Applicative
   , optional
   )
 import Control.Monad
-  ( ap
-  , join
+  ( join
   , replicateM
   , when
   )
@@ -42,12 +41,20 @@ import Data.Maybe
   , isNothing
   )
 import Data.Time
-  ( UTCTime (utctDay)
+  ( UTCTime
+  , DayOfWeek(..)
+  , dayOfWeek
   , defaultTimeLocale
   , formatTime
   , fromGregorian
   , getCurrentTime
   , toGregorian
+  )
+import Data.Time.Calendar
+  ( Day
+  )
+import Data.Time.Format
+  ( readPTime
   )
 
 import Numeric
@@ -65,6 +72,7 @@ import System.Console.GetOpt
   )
 import System.Environment
   ( getArgs
+  , getEnv
   , getProgName
   )
 import System.IO
@@ -114,7 +122,6 @@ import TH
 import Text.ParserCombinators.ReadP
   ( ReadP
   , char
-  , choice
   , eof
   , get
   , munch1
@@ -136,43 +143,14 @@ newtype Entry =
   Entry [StringT]
   deriving (Show)
 
-data DayOfWeek
-  = Monday
-  | Tuesday
-  | Wednesday
-  | Thursday
-  | Friday
-  deriving (Eq, Enum)
-
-instance Show DayOfWeek where
-  show Monday    = "mandag"
-  show Tuesday   = "tirsdag"
-  show Wednesday = "onsdag"
-  show Thursday  = "torsdag"
-  show Friday    = "fredag"
-
-data Month
-  = January
-  | February
-  | March
-  | April
-  | May
-  | June
-  | July
-  | August
-  | September
-  | October
-  | November
-  | December
-  deriving (Show, Eq, Enum)
-
-data DeliveryDay =
-  DeliveryDay
-    { day :: DayOfWeek
-    , dayNum :: Int
-    , month :: Month
-    }
-  deriving (Show)
+showDow :: DayOfWeek -> String
+showDow Monday    = "mandag"
+showDow Tuesday   = "tirsdag"
+showDow Wednesday = "onsdag"
+showDow Thursday  = "torsdag"
+showDow Friday    = "fredag"
+showDow Saturday  = "lørdag"
+showDow Sunday    = "søndag"
 
 type Parser = ReadP
 
@@ -200,7 +178,7 @@ skipUntil p = p <|> (get *> skipUntil p)
 entryP :: Parser Entry
 entryP = do
   (void . skipUntil)
-    $  string "\"nextDeliveryDays\""
+    $  string "\"delivery_dates\""
     <* skipSpaces
     <* char ':'
     <* skipSpaces
@@ -243,29 +221,11 @@ jsonStringP = char '"' *> jString
     escapeUnicode =
       chr . fst . head . readHex <$> replicateM 4 (satisfy isHexDigit)
 
-deliveryDayP :: Parser DeliveryDay
-deliveryDayP = DeliveryDay <$>- weekDayP <*>- (read <$> digitsP) <*>- monthP
+deliveryDayP :: Parser Day
+deliveryDayP = readPTime False defaultTimeLocale "%Y-%m-%d"
 
 digitsP :: Parser StringT
 digitsP = munch1 isDigit
-
-weekDayP :: ReadP DayOfWeek
-weekDayP = choice $ ap (¤) show <$> [Monday .. Friday]
-
-monthP :: Parser Month
-monthP =
-  (January ¤ "januar")
-    <|> (February ¤ "februar")
-    <|> (March ¤ "mars")
-    <|> (April ¤ "april")
-    <|> (May ¤ "mai")
-    <|> (June ¤ "juni")
-    <|> (July ¤ "juli")
-    <|> (August ¤ "august")
-    <|> (September ¤ "september")
-    <|> (October ¤ "oktober")
-    <|> (November ¤ "november")
-    <|> (December ¤ "desember")
 
 runParser :: Parser a -> StringT -> Maybe a
 runParser parser str = case readP_to_S parser str of
@@ -393,12 +353,11 @@ main = do
     :: Maybe PostalCode
     -> StringT
     -> UTCTime
-    -> Maybe DeliveryDay
+    -> Maybe Day
     -> [Maybe StringT]
-  event code hostname now (Just (DeliveryDay dayName d m)) =
+  event code hostname now (Just day) =
     let
-      year = thisYear + if thisMonth == 12 && m /= December then 1 else 0
-      (thisYear, thisMonth, _) = (toGregorian . utctDay) now
+      (year, m, d) = toGregorian day
       dtstart                  = fromGregorian year (fromEnum m + 1) d
       dtend                    = succ dtstart
       icalDate field =
@@ -413,7 +372,7 @@ main = do
                      (formatTime defaultTimeLocale "%C%y%m%d" dtstart)
                      hostname
             , "URL:https://www.posten.no/levering-av-post/"
-            , printf "SUMMARY:%sPosten kommer %s %d." code' (show dayName) d
+            , printf "SUMMARY:%sPosten kommer %s %d." code' (showDow . dayOfWeek $ day) d
             , icalDate "DTSTART" dtstart
             , icalDate "DTEND"   dtend
             , formatTime defaultTimeLocale "DTSTAMP:%C%y%m%dT%H%M%SZ" now
@@ -439,18 +398,24 @@ main = do
 
   fetchData :: Maybe PostalCode -> IO (ExitCode, StringT, StringT)
   fetchData Nothing     = (ExitSuccess, , "") <$> getContents
-  fetchData (Just code) = readProcessWithExitCode
-    "curl"
-    [ "-sSL"
-    , "--retry"
-    , "5"
-    , "--fail"
-    , "https://www.posten.no/levering-av-post/_/component/main/1/leftRegion/11?postCode="
-      <> show code
-    , "-H"
-    , "x-requested-with: XMLHttpRequest"
-    ]
-    ""
+  fetchData (Just code) = do
+    apiUid <- getEnv "POSTGANG_API_UID"
+    apiKey <- getEnv "POSTGANG_API_KEY"
+    readProcessWithExitCode
+      "curl"
+      [ "-sSL"
+      , "--retry"
+      , "5"
+      , "--fail"
+      , "https://api.bring.com/address/api/no/postal-codes/"
+        <> show code
+        <> "/mailbox-delivery-dates"
+      , "-H"
+      , "X-Mybring-API-Uid: " <> apiUid
+      , "-H"
+      , "X-Mybring-API-Key: " <> apiKey
+      ]
+      ""
 
   opts = do
     argv <- getArgs
