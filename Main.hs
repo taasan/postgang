@@ -46,7 +46,6 @@ import Data.Time
   , dayOfWeek
   , defaultTimeLocale
   , formatTime
-  , fromGregorian
   , getCurrentTime
   , toGregorian
   )
@@ -357,9 +356,9 @@ main = do
     -> [Maybe StringT]
   event code hostname now (Just day) =
     let
-      (year, m, d) = toGregorian day
-      dtstart                  = fromGregorian year (fromEnum m + 1) d
-      dtend                    = succ dtstart
+      (_, _, d)      = toGregorian day
+      dtstart        = day
+      dtend          = succ dtstart
       icalDate field =
         formatTime defaultTimeLocale $ field <> ";VALUE=DATE:%C%y%m%d"
       code' = case code of
